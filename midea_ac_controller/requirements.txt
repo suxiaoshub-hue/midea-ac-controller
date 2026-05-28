@@ -1,0 +1,6 @@
+aiohttp>=3.9
+aiofiles>=23.2
+pycryptodome>=3.20
+requests>=2.31
+pyinstaller>=6.6
+

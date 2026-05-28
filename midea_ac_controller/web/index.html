@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>美的美居多设备控制端</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <h1>美的美居多设备控制端</h1>
+        <p>登录美的美居账号后即可控制空调</p>
+      </div>
+      <div class="actions">
+        <button id="btnLogin" class="primary">登录账号</button>
+        <button id="btnRefresh">刷新全部设备</button>
+      </div>
+    </header>
+
+    <section class="login-panel">
+      <input id="server" placeholder="服务器" value="美的美居" />
+      <input id="account" placeholder="账号" />
+      <input id="password" placeholder="密码" type="password" />
+      <input id="proxy" placeholder="代理(可选)" />
+    </section>
+
+    <main>
+      <div id="statusBar" class="status-bar">未登录</div>
+      <section id="devices" class="device-grid"></section>
+    </main>
+
+    <section class="log-panel">
+      <h2>运行日志输出区</h2>
+      <pre id="logs"></pre>
+    </section>
+  </div>
+  <script src="./renderer.js"></script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+.DS_Store
+.venv/
+dist/
+build/
+*.spec.bak
+midea_auto_cloud/
+midea_ac_controller_preview.png
+midea_ac_controller/electron/backend/
+midea_ac_controller/electron/web/
+midea_ac_controller/electron/dist/
