@@ -38,7 +38,7 @@ function createWindow() {
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
-    mainWindow.hide();
+    mainWindow.minimize();
   });
 }
 
