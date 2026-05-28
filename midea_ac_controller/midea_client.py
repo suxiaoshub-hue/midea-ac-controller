@@ -372,11 +372,9 @@ class MideaAcClient:
                     control["mode"] = mode
                 if device.attrs.get("wind_speed") is not None:
                     control["wind_speed"] = device.attrs.get("wind_speed")
-            else:
-                control["power.current"] = "off"
-                control["mode"] = "off"
             await self._send_regular_control(device, control)
         self.log(f"{device.name}: {'开机' if on else '关机'}")
+        await asyncio.sleep(1.0)
         await self.refresh_devices(log_refresh=False)
 
     async def set_temperature(self, device_id: str, temperature: float) -> None:
