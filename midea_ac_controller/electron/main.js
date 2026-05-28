@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage } = require("electron");
+const http = require("http");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -8,7 +9,7 @@ let tray;
 let isQuitting = false;
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
-  app.quit();
+  app.exit(0);
 }
 
 function createTrayIcon() {
@@ -70,6 +71,20 @@ function createTray() {
   tray.on("click", showMainWindow);
 }
 
+function isBackendRunning() {
+  return new Promise((resolve) => {
+    const req = http.get("http://127.0.0.1:18765/api/health", (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.setTimeout(800, () => {
+      req.destroy();
+      resolve(false);
+    });
+    req.on("error", () => resolve(false));
+  });
+}
+
 function startBackend() {
   if (app.isPackaged) {
     const exe = path.join(process.resourcesPath, "backend", "midea_backend.exe");
@@ -84,9 +99,11 @@ function startBackend() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (!gotTheLock) return;
-  startBackend();
+  if (!(await isBackendRunning())) {
+    startBackend();
+  }
   createWindow();
   createTray();
 });

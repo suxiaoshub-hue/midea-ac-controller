@@ -9,6 +9,7 @@ const state = {
   pendingChanges: {},
   statePollBusy: false,
   refreshPollBusy: false,
+  interactingUntil: 0,
 };
 
 async function api(path, method = "GET", body) {
@@ -159,6 +160,7 @@ function mergePendingDeviceState(devices = []) {
 }
 
 function renderDevices(devices = []) {
+  if (Date.now() < state.interactingUntil) return;
   const root = el("devices");
   const sortedDevices = sortDevices(devices);
   const signature = deviceStateSignature(sortedDevices);
@@ -274,7 +276,12 @@ function updateLocalDevice(deviceId, updates) {
   renderDevices(state.devices);
 }
 
+function holdDeviceRender(durationMs = 1200) {
+  state.interactingUntil = Date.now() + durationMs;
+}
+
 async function pollState() {
+  if (Date.now() < state.interactingUntil) return;
   if (state.statePollBusy) return;
   state.statePollBusy = true;
   try {
@@ -288,6 +295,7 @@ async function pollState() {
 }
 
 async function pollDevices() {
+  if (Date.now() < state.interactingUntil) return;
   if (!state.loggedIn || state.refreshPollBusy) return;
   state.refreshPollBusy = true;
   try {
@@ -306,8 +314,9 @@ document.addEventListener("click", async (event) => {
   if (!device) return;
   if (action === "power") {
     const next = !device.power_on;
-    updateLocalDevice(deviceId, { power_on: next, current_mode: next ? (device.current_mode === "off" ? "cool" : device.current_mode) : "off" });
-    await control(deviceId, "power", next);
+    const targetTemp = tempStep(device.target_temperature || 26);
+    updateLocalDevice(deviceId, { power_on: next, current_mode: next ? (device.current_mode === "off" ? "cool" : device.current_mode) : "off", target_temperature: targetTemp });
+    await control(deviceId, "power", { on: next, temperature: targetTemp });
   } else if (action === "temp-down") {
     const nextTemp = tempStep(device.target_temperature || 26) - 1;
     updateLocalDevice(deviceId, { target_temperature: nextTemp });
@@ -322,13 +331,16 @@ document.addEventListener("click", async (event) => {
 document.addEventListener("change", async (event) => {
   const target = event.target;
   if (!target.matches("select[data-action]")) return;
+  holdDeviceRender(1800);
   const updates = target.dataset.action === "mode" ? { current_mode: target.value, power_on: target.value !== "off" } : { fan_speed: target.value };
-  if (target.dataset.action === "mode") {
-    updateLocalDevice(target.dataset.id, updates);
-  } else {
-    updateLocalDevice(target.dataset.id, updates);
-  }
+  updateLocalDevice(target.dataset.id, updates);
   await control(target.dataset.id, target.dataset.action, target.value);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (event.target.closest("select[data-action]")) {
+    holdDeviceRender(2000);
+  }
 });
 
 el("btnLogin").addEventListener("click", () => {
