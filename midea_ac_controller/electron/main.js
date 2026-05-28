@@ -1,12 +1,26 @@
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, Menu, Tray, nativeImage } = require("electron");
 const path = require("path");
 const { spawn } = require("child_process");
 
+let mainWindow;
 let backend;
+let tray;
 let isQuitting = false;
 
+function createTrayIcon() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+      <rect width="32" height="32" rx="8" fill="#1f7af5"/>
+      <path d="M9 12h14a3 3 0 0 1 3 3v3a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3v-3a3 3 0 0 1 3-3Z" fill="#fff"/>
+      <path d="M11 20v3M16 20v3M21 20v3" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="23" cy="16" r="1.5" fill="#1f7af5"/>
+    </svg>
+  `;
+  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+}
+
 function createWindow() {
-  const win = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 900,
     minWidth: 980,
@@ -20,16 +34,36 @@ function createWindow() {
   });
   const packagedWeb = path.join(__dirname, "web", "index.html");
   const devWeb = path.join(__dirname, "..", "web", "index.html");
-  win.loadFile(app.isPackaged ? packagedWeb : devWeb);
-  win.on("close", (event) => {
+  mainWindow.loadFile(app.isPackaged ? packagedWeb : devWeb);
+  mainWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
-    if (process.platform === "win32") {
-      win.minimize();
-      return;
-    }
-    win.hide();
+    mainWindow.hide();
   });
+}
+
+function showMainWindow() {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function createTray() {
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip("美的美居多设备控制端");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "打开主界面", click: showMainWindow },
+    { type: "separator" },
+    {
+      label: "退出软件",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]));
+  tray.on("click", showMainWindow);
 }
 
 function startBackend() {
@@ -49,13 +83,17 @@ function startBackend() {
 app.whenReady().then(() => {
   startBackend();
   createWindow();
+  createTray();
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
 });
 
-app.on("window-all-closed", () => {
+app.on("will-quit", () => {
   if (backend) backend.kill();
+});
+
+app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
