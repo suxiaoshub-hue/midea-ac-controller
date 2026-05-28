@@ -99,6 +99,32 @@ class AcDevice:
                 return value
         return None
 
+    @property
+    def current_mode(self) -> str:
+        if self.device_type == 0x21 or self.is_central_node:
+            run_modes = {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}
+            return run_modes.get(str(self.attrs.get("run_mode", "2")), str(self.attrs.get("run_mode", "2")))
+        mode = self.attrs.get("mode")
+        if isinstance(mode, str) and mode:
+            return mode
+        if not self.power_on:
+            return "off"
+        return "cool"
+
+    @property
+    def fan_speed(self) -> str:
+        if self.device_type == 0x21 or self.is_central_node:
+            fan_modes = {"0": "off", "1": "low", "3": "medium", "5": "high", "8": "auto"}
+            return fan_modes.get(str(self.attrs.get("fan_speed", "8")), str(self.attrs.get("fan_speed", "8")))
+        fan = self.attrs.get("wind_speed")
+        reverse = {20: "silent", 40: "low", 60: "medium", 80: "high", 100: "full", 102: "auto"}
+        if isinstance(fan, str):
+            try:
+                fan = int(float(fan))
+            except (TypeError, ValueError):
+                return fan
+        return reverse.get(int(fan), "auto") if fan is not None else "auto"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -118,6 +144,8 @@ class AcDevice:
             "modelid": self.modelid,
             "idtype": self.idtype,
             "power_on": self.power_on,
+            "current_mode": self.current_mode,
+            "fan_speed": self.fan_speed,
             "target_temperature": self.target_temperature,
             "current_temperature": self.current_temperature,
             "attrs": self.attrs,

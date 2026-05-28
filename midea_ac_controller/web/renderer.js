@@ -1,5 +1,11 @@
 const state = {
   devices: [],
+  loggedIn: false,
+  deviceSignature: "",
+  stateTimer: null,
+  refreshTimer: null,
+  statePollBusy: false,
+  refreshPollBusy: false,
 };
 
 async function api(path, method = "GET", body) {
@@ -17,23 +23,51 @@ function el(id) {
 
 function renderLogs(lines = []) {
   el("logs").textContent = lines.join("\n");
+  const box = el("logs");
+  box.scrollTop = box.scrollHeight;
 }
 
 function renderStatus(data) {
-  el("statusBar").textContent = data.logged_in ? `已登录，设备 ${data.device_count} 台` : "未登录";
+  state.loggedIn = Boolean(data.logged_in);
+  el("statusBar").textContent = state.loggedIn ? `已登录，设备 ${data.device_count} 台` : "未登录";
   renderLogs(data.logs || []);
+}
+
+function buildOptions(options, value) {
+  return options.map((item) => `<option value="${item}" ${item === value ? "selected" : ""}>${item}</option>`).join("");
+}
+
+function deviceStateSignature(devices) {
+  return JSON.stringify(
+    devices.map((d) => [
+      d.id,
+      d.name,
+      d.online,
+      d.power_on,
+      d.current_mode,
+      d.fan_speed,
+      d.current_temperature,
+      d.target_temperature,
+    ]),
+  );
 }
 
 function renderDevices(devices = []) {
   const root = el("devices");
+  const signature = deviceStateSignature(devices);
+  if (signature === state.deviceSignature) return;
+  state.deviceSignature = signature;
   root.innerHTML = "";
   for (const d of devices) {
+    const modeValue = d.current_mode || "cool";
+    const fanValue = d.fan_speed || "auto";
     const card = document.createElement("article");
     card.className = "card";
     card.innerHTML = `
       <h3>${d.name}</h3>
       <div>设备号：${d.id}</div>
       <div>温度：${d.current_temperature ?? "-"} / ${d.target_temperature ?? "-"}</div>
+      <div>模式：${modeValue}　风速：${fanValue}</div>
       <div class="row">
         <button data-action="power" data-id="${d.id}">${d.power_on ? "关机" : "开机"}</button>
         <button data-action="temp-down" data-id="${d.id}">-</button>
@@ -41,12 +75,12 @@ function renderDevices(devices = []) {
       </div>
       <div class="row">
         <select data-action="mode" data-id="${d.id}">
-          ${["cool","heat","auto","dry","fan","off"].map(v => `<option value="${v}" ${v === "cool" ? "selected" : ""}>${v}</option>`).join("")}
+          ${buildOptions(["cool", "heat", "auto", "dry", "fan", "off"], modeValue)}
         </select>
       </div>
       <div class="row">
         <select data-action="fan" data-id="${d.id}">
-          ${["auto","low","medium","high"].map(v => `<option value="${v}">${v}</option>`).join("")}
+          ${buildOptions(["auto", "low", "medium", "high", "silent", "full"], fanValue)}
         </select>
       </div>
     `;
@@ -61,6 +95,13 @@ async function refreshAll() {
   renderDevices(state.devices);
 }
 
+async function refreshDevices() {
+  const data = await api("/api/refresh", "POST", {});
+  state.devices = data.devices || [];
+  renderStatus(data.state || {});
+  renderDevices(state.devices);
+}
+
 async function login() {
   const payload = {
     server: el("server").value,
@@ -70,6 +111,7 @@ async function login() {
   };
   const data = await api("/api/login", "POST", payload);
   state.devices = data.devices || [];
+  state.deviceSignature = "";
   renderStatus(data.state || {});
   renderDevices(state.devices);
 }
@@ -77,8 +119,31 @@ async function login() {
 async function control(deviceId, action, value) {
   const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
   state.devices = data.devices || [];
+  state.deviceSignature = "";
   renderStatus(data.state || {});
   renderDevices(state.devices);
+}
+
+async function pollState() {
+  if (state.statePollBusy) return;
+  state.statePollBusy = true;
+  try {
+    const data = await api("/api/state");
+    renderStatus(data);
+    renderDevices(data.devices || []);
+  } finally {
+    state.statePollBusy = false;
+  }
+}
+
+async function pollDevices() {
+  if (!state.loggedIn || state.refreshPollBusy) return;
+  state.refreshPollBusy = true;
+  try {
+    await refreshDevices();
+  } finally {
+    state.refreshPollBusy = false;
+  }
 }
 
 document.addEventListener("click", async (event) => {
@@ -107,3 +172,5 @@ el("btnLogin").addEventListener("click", login);
 el("btnRefresh").addEventListener("click", refreshAll);
 
 refreshAll();
+setInterval(pollState, 2000);
+setInterval(pollDevices, 10000);
