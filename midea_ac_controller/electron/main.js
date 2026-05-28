@@ -3,6 +3,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 
 let backend;
+let isQuitting = false;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -20,6 +21,15 @@ function createWindow() {
   const packagedWeb = path.join(__dirname, "web", "index.html");
   const devWeb = path.join(__dirname, "..", "web", "index.html");
   win.loadFile(app.isPackaged ? packagedWeb : devWeb);
+  win.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    if (process.platform === "win32") {
+      win.minimize();
+      return;
+    }
+    win.hide();
+  });
 }
 
 function startBackend() {
@@ -39,6 +49,10 @@ function startBackend() {
 app.whenReady().then(() => {
   startBackend();
   createWindow();
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
 });
 
 app.on("window-all-closed", () => {
