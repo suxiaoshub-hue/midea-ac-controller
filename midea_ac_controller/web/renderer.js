@@ -26,6 +26,26 @@ function el(id) {
   return document.getElementById(id);
 }
 
+function formatBuildTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || "local";
+  return date.toLocaleString();
+}
+
+async function loadVersion() {
+  try {
+    const res = await fetch("./version.json", { cache: "no-store" });
+    const info = await res.json();
+    const version = info.version || "dev";
+    const commit = info.commit || "local";
+    const builtAt = formatBuildTime(info.built_at);
+    el("versionBadge").textContent = `v${version} · ${commit} · ${builtAt}`;
+    document.title = `美的美居多设备控制端 v${version} (${commit})`;
+  } catch {
+    el("versionBadge").textContent = "vdev · local";
+  }
+}
+
 function renderLogs(lines = []) {
   const box = el("logs");
   const visibleLines = lines.slice(-5);
@@ -380,6 +400,7 @@ el("btnLogin").addEventListener("click", () => {
 });
 el("btnRefresh").addEventListener("click", () => (state.loggedIn ? refreshDevices(false) : refreshAll()));
 
+loadVersion();
 refreshAll();
 setInterval(pollState, 5000);
 setInterval(pollDevices, 30000);

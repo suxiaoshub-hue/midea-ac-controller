@@ -31,7 +31,7 @@ jobs:
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: midea-ac-controller-windows
+          name: midea-ac-controller-windows-${{ github.sha }}
           path: |
             midea_ac_controller/electron/dist/*.exe
             midea_ac_controller/electron/dist/*.blockmap
