@@ -6,6 +6,10 @@ let mainWindow;
 let backend;
 let tray;
 let isQuitting = false;
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+}
 
 function createTrayIcon() {
   const svg = `
@@ -81,9 +85,16 @@ function startBackend() {
 }
 
 app.whenReady().then(() => {
+  if (!gotTheLock) return;
   startBackend();
   createWindow();
   createTray();
+});
+
+app.on("second-instance", () => {
+  if (mainWindow) {
+    showMainWindow();
+  }
 });
 
 app.on("before-quit", () => {
