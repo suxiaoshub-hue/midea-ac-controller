@@ -55,6 +55,13 @@ function buildOptions(options, value) {
   return options.map((item) => `<option value="${item.value}" ${item.value === value ? "selected" : ""}>${item.label}</option>`).join("");
 }
 
+function formatTemp(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  return Number.isInteger(num) ? String(num) : num.toFixed(1).replace(/\.0$/, "");
+}
+
 function translateMode(mode) {
   const map = {
     cool: "制冷",
@@ -112,6 +119,20 @@ function deviceStateSignature(devices) {
   );
 }
 
+function extractSortNumber(name) {
+  const match = String(name || "").match(/[（(]\s*(\d+)(?:\s*[-~－—至]\s*\d+)?\s*[)）]/);
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+}
+
+function sortDevices(devices) {
+  return [...devices].sort((a, b) => {
+    const an = extractSortNumber(a.name);
+    const bn = extractSortNumber(b.name);
+    if (an !== bn) return an - bn;
+    return String(a.name || "").localeCompare(String(b.name || ""), "zh-Hans-CN");
+  });
+}
+
 function setPendingDeviceState(deviceId, updates, durationMs = 15000) {
   state.pendingChanges[deviceId] = {
     updates,
@@ -134,11 +155,12 @@ function mergePendingDeviceState(devices = []) {
 
 function renderDevices(devices = []) {
   const root = el("devices");
-  const signature = deviceStateSignature(devices);
+  const sortedDevices = sortDevices(devices);
+  const signature = deviceStateSignature(sortedDevices);
   if (signature === state.deviceSignature) return;
   state.deviceSignature = signature;
   root.innerHTML = "";
-  for (const d of devices) {
+  for (const d of sortedDevices) {
     const modeValue = d.current_mode || "cool";
     const fanValue = d.fan_speed || "auto";
     const onlineClass = d.online ? "online" : "offline";
@@ -154,7 +176,7 @@ function renderDevices(devices = []) {
         <button class="more-btn" type="button" aria-label="设备菜单">··</button>
       </div>
       <div class="device-meta">设备号：${d.id}</div>
-      <div class="device-meta">当前温度：${d.current_temperature ?? "-"}° 目标温度：${d.target_temperature ?? "-"}°</div>
+      <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
         <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机">
@@ -163,7 +185,7 @@ function renderDevices(devices = []) {
       </div>
       <div class="temp-row">
         <button class="temp-btn" data-action="temp-down" data-id="${d.id}" aria-label="降低温度">−</button>
-        <div class="temp-value">${Math.round(d.target_temperature ?? 26)}°</div>
+        <div class="temp-value">${formatTemp(d.target_temperature ?? 26)}°</div>
         <button class="temp-btn" data-action="temp-up" data-id="${d.id}" aria-label="升高温度">+</button>
       </div>
       <div class="select-grid">

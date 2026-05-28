@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -29,6 +30,23 @@ def _as_float(value: Any, default: float | None = None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_temperature(value: Any) -> float | None:
+    temperature = _as_float(value, None)
+    if temperature is None:
+        return None
+    if 10.0 <= temperature <= 40.0:
+        return temperature
+    return None
+
+
+def _first_temperature(attrs: dict[str, Any], keys: tuple[str, ...]) -> float | None:
+    for key in keys:
+        temperature = _as_temperature(attrs.get(key))
+        if temperature is not None:
+            return temperature
+    return None
 
 
 def _nest_dot_keys(values: dict[str, Any]) -> dict[str, Any]:
@@ -81,15 +99,34 @@ class AcDevice:
 
     @property
     def target_temperature(self) -> float:
+        local_target = _as_temperature(self.attrs.get("_local_target_temperature"))
         if self.device_type == 0x21 or self.is_central_node:
             mode = str(self.attrs.get("run_mode", "2"))
-            key = "heat_temp_set" if mode == "3" else "cool_temp_set"
-            return _as_float(self.attrs.get(key), 26.0) or 26.0
-        base = _as_float(self.attrs.get("temperature"), None)
-        if base is None:
-            base = _as_float(self.attrs.get("temperature.current"), 26.0)
-        dec = _as_float(self.attrs.get("small_temperature"), 0.0) or 0.0
-        return float(base or 26.0) + dec
+            mode_keys = ("heat_temp_set", "heating_temp") if mode == "3" else ("cool_temp_set", "cooling_temp")
+            explicit = _first_temperature(self.attrs, (*mode_keys, "target_temperature", "temperature.set", "set_temperature", "temp_set"))
+            return explicit or local_target or 26.0
+
+        mode = str(self.attrs.get("mode") or self.attrs.get("mode.current") or "cool")
+        mode_keys = ("heat_temp_set", "heating_temp") if mode == "heat" else ("cool_temp_set", "cooling_temp")
+        explicit = _first_temperature(
+            self.attrs,
+            (
+                *mode_keys,
+                "target_temperature",
+                "temperature.target",
+                "temperature.set",
+                "temperature_setting",
+                "set_temperature",
+                "temp_set",
+                "target_temp",
+                "set_temp",
+            ),
+        )
+        if explicit is not None:
+            return explicit
+        if local_target is not None:
+            return local_target
+        return _as_temperature(self.attrs.get("temperature")) or 26.0
 
     @property
     def current_temperature(self) -> float | None:
@@ -216,7 +253,7 @@ class MideaAcClient:
         self.devices = all_devices
         await self.refresh_devices(log_refresh=False)
         self.log(f"设备同步完成：找到 {len(self.devices)} 台空调")
-        return list(self.devices.values())
+        return sorted(self.devices.values(), key=_device_sort_key)
 
     async def refresh_devices(self, log_refresh: bool = True) -> list[AcDevice]:
         if self.cloud is None:
@@ -233,7 +270,7 @@ class MideaAcClient:
             if device.device_type == 0x21 or device.is_central_node:
                 continue
             await self._refresh_regular_ac(device)
-        return list(self.devices.values())
+        return sorted(self.devices.values(), key=_device_sort_key)
 
     async def _refresh_regular_ac(self, device: AcDevice) -> None:
         if self.cloud is None:
@@ -328,7 +365,12 @@ class MideaAcClient:
             self.log(f"{device.name}: 设置温度 {temperature:g}°")
             return
         temp_int = int(temperature)
-        control = {"temperature": temp_int, "small_temperature": round(temperature - temp_int, 1)}
+        fraction = round(temperature - temp_int, 1)
+        control = {"temperature": temp_int}
+        if fraction:
+            control["small_temperature"] = fraction
+        else:
+            control["small_temperature"] = 0
         await self._send_regular_control(device, control)
         self.log(f"{device.name}: 设置温度 {temperature:g}°")
 
@@ -371,6 +413,10 @@ class MideaAcClient:
         if not ok:
             raise RuntimeError(f"{device.name}: 控制失败")
         device.attrs.update(control)
+        if "temperature" in control:
+            device.attrs["_local_target_temperature"] = float(control["temperature"]) + float(control.get("small_temperature") or 0)
+        elif "cooling_temp" in control or "heating_temp" in control:
+            device.attrs["_local_target_temperature"] = control.get("cooling_temp") or control.get("heating_temp")
 
     async def _send_central_control(self, device: AcDevice, control: dict[str, Any]) -> None:
         if self.cloud is None:
@@ -393,6 +439,8 @@ class MideaAcClient:
         if not ok:
             raise RuntimeError(f"{device.name}: 控制失败")
         device.attrs.update(control)
+        if "cooling_temp" in control or "heating_temp" in control:
+            device.attrs["_local_target_temperature"] = control.get("cooling_temp") or control.get("heating_temp")
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -400,8 +448,11 @@ class MideaAcClient:
             "logged_in": self.cloud is not None,
             "nickname": getattr(self.cloud, "nickname", None) if self.cloud else None,
             "device_count": len(self.devices),
-            "devices": [device.to_dict() for device in self.devices.values()],
+            "devices": [device.to_dict() for device in self.device_list()],
         }
+
+    def device_list(self) -> list[AcDevice]:
+        return sorted(self.devices.values(), key=_device_sort_key)
 
 
 def run_async(coro):
@@ -451,3 +502,13 @@ def _fan_label(fan: str) -> str:
         "full": "强风",
         "off": "关闭",
     }.get(fan, fan)
+
+
+_DEVICE_ORDER_RE = re.compile(r"[（(]\s*(\d+)(?:\s*[-~－—至]\s*\d+)?\s*[)）]")
+
+
+def _device_sort_key(device: AcDevice) -> tuple[int, int, str]:
+    match = _DEVICE_ORDER_RE.search(device.name or "")
+    if match:
+        return (0, int(match.group(1)), device.name.lower())
+    return (1, 10**9, device.name.lower())

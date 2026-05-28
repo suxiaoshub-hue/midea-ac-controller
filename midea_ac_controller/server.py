@@ -108,7 +108,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not ok:
                     raise RuntimeError("登录失败，请检查账号、密码、服务器和网络")
                 devices = STATE.run(STATE.client.load_devices())
-                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot()})
+                self._send_json({"ok": True, "devices": [d.to_dict() for d in STATE.client.device_list()], "state": self._snapshot()})
             elif path == "/api/refresh":
                 quiet = bool(payload.get("quiet"))
                 devices = STATE.run(STATE.client.refresh_devices(log_refresh=not quiet))
@@ -129,7 +129,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     STATE.run(STATE.client.set_fan(device_id, str(value)))
                 else:
                     raise ValueError(f"未知控制动作: {action}")
-                devices = list(STATE.client.devices.values())
+                devices = STATE.client.device_list()
                 self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot()})
             else:
                 self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
