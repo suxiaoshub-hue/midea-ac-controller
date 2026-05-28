@@ -99,7 +99,10 @@ class AcDevice:
     def power_on(self) -> bool:
         if self.device_type == 0x21 or self.is_central_node:
             return str(self.attrs.get("run_mode", "0")) != "0"
-        return _truthy_on(self.attrs.get("power"))
+        for key in ("power", "power.current", "power_on", "power.status"):
+            if key in self.attrs:
+                return _truthy_on(self.attrs.get(key))
+        return False
 
     @property
     def target_temperature(self) -> float:
@@ -369,8 +372,12 @@ class MideaAcClient:
                     control["mode"] = mode
                 if device.attrs.get("wind_speed") is not None:
                     control["wind_speed"] = device.attrs.get("wind_speed")
+            else:
+                control["power.current"] = "off"
+                control["mode"] = "off"
             await self._send_regular_control(device, control)
         self.log(f"{device.name}: {'开机' if on else '关机'}")
+        await self.refresh_devices(log_refresh=False)
 
     async def set_temperature(self, device_id: str, temperature: float) -> None:
         device = self.devices[device_id]

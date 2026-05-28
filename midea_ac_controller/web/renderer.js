@@ -7,6 +7,7 @@ const state = {
   loginPanelOpen: false,
   verifyTimer: null,
   pendingChanges: {},
+  busyDevices: {},
   statePollBusy: false,
   refreshPollBusy: false,
   interactingUntil: 0,
@@ -121,6 +122,7 @@ function deviceStateSignature(devices) {
       d.fan_speed,
       d.current_temperature,
       d.target_temperature,
+      state.busyDevices[d.id] || "",
     ]),
   );
 }
@@ -144,6 +146,10 @@ function setPendingDeviceState(deviceId, updates, durationMs = 15000) {
     updates,
     expiresAt: Date.now() + durationMs,
   };
+}
+
+function clearPendingDeviceState(deviceId) {
+  delete state.pendingChanges[deviceId];
 }
 
 function mergePendingDeviceState(devices = []) {
@@ -172,6 +178,7 @@ function renderDevices(devices = []) {
     const fanValue = d.fan_speed || "auto";
     const onlineClass = d.online ? "online" : "offline";
     const stateText = d.power_on ? "开" : "关";
+    const busyText = state.busyDevices[d.id];
     const card = document.createElement("article");
     card.className = "card";
     card.innerHTML = `
@@ -186,7 +193,7 @@ function renderDevices(devices = []) {
       <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
-        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机">
+        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机" ${busyText ? "disabled" : ""}>
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </button>
       </div>
@@ -210,7 +217,7 @@ function renderDevices(devices = []) {
         </label>
       </div>
       <div class="card-foot">
-        <span>${d.power_on ? "运行中" : "已关闭"}</span>
+        <span>${busyText || (d.power_on ? "运行中" : "已关闭")}</span>
         <span>状态：${stateText} | 模式：${translateMode(modeValue)} | 风速：${translateFan(fanValue)}</span>
       </div>
     `;
@@ -248,15 +255,26 @@ async function login() {
 }
 
 async function control(deviceId, action, value) {
-  const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
-  state.devices = mergePendingDeviceState(data.devices || []);
-  state.deviceSignature = "";
-  renderStatus(data.state || {});
-  renderDevices(state.devices);
-  if (data.state && Array.isArray(data.state.logs)) {
-    renderLogs(data.state.logs);
+  try {
+    const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
+    state.devices = mergePendingDeviceState(data.devices || []);
+    state.deviceSignature = "";
+    renderStatus(data.state || {});
+    renderDevices(state.devices);
+    if (data.state && Array.isArray(data.state.logs)) {
+      renderLogs(data.state.logs);
+    }
+    if (action === "power") {
+      clearPendingDeviceState(deviceId);
+      await refreshDevices(true);
+    } else {
+      scheduleVerifyRefresh();
+    }
+  } finally {
+    delete state.busyDevices[deviceId];
+    state.deviceSignature = "";
+    renderDevices(state.devices);
   }
-  scheduleVerifyRefresh();
 }
 
 function scheduleVerifyRefresh() {
@@ -315,7 +333,17 @@ document.addEventListener("click", async (event) => {
   if (action === "power") {
     const next = !device.power_on;
     const targetTemp = tempStep(device.target_temperature || 26);
-    updateLocalDevice(deviceId, { power_on: next, current_mode: next ? (device.current_mode === "off" ? "cool" : device.current_mode) : "off", target_temperature: targetTemp });
+    state.busyDevices[deviceId] = next ? "开机中" : "关机中";
+    if (next) {
+      updateLocalDevice(deviceId, {
+        power_on: true,
+        current_mode: device.current_mode === "off" ? "cool" : device.current_mode,
+        target_temperature: targetTemp,
+      });
+    } else {
+      state.deviceSignature = "";
+      renderDevices(state.devices);
+    }
     await control(deviceId, "power", { on: next, temperature: targetTemp });
   } else if (action === "temp-down") {
     const nextTemp = tempStep(device.target_temperature || 26) - 1;
