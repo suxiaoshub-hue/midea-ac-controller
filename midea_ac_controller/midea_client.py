@@ -355,22 +355,17 @@ class MideaAcClient:
 
     async def set_temperature(self, device_id: str, temperature: float) -> None:
         device = self.devices[device_id]
-        temperature = max(17.0, min(30.0, float(temperature)))
+        temperature = max(17.0, min(30.0, round(float(temperature))))
         if device.device_type == 0x21 or device.is_central_node:
             mode = str(device.attrs.get("run_mode", "2"))
-            control = {"cooling_temp": str(temperature)}
+            control = {"cooling_temp": str(int(temperature))}
             if mode == "3":
-                control["heating_temp"] = str(temperature)
+                control["heating_temp"] = str(int(temperature))
             await self._send_central_control(device, control)
             self.log(f"{device.name}: 设置温度 {temperature:g}°")
             return
         temp_int = int(temperature)
-        fraction = round(temperature - temp_int, 1)
-        control = {"temperature": temp_int}
-        if fraction:
-            control["small_temperature"] = fraction
-        else:
-            control["small_temperature"] = 0
+        control = {"temperature": temp_int, "small_temperature": 0}
         await self._send_regular_control(device, control)
         self.log(f"{device.name}: 设置温度 {temperature:g}°")
 

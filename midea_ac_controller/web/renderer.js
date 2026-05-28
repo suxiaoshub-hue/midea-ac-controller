@@ -59,7 +59,12 @@ function formatTemp(value) {
   if (value === null || value === undefined || value === "") return "-";
   const num = Number(value);
   if (!Number.isFinite(num)) return String(value);
-  return Number.isInteger(num) ? String(num) : num.toFixed(1).replace(/\.0$/, "");
+  return String(Math.round(num));
+}
+
+function tempStep(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? Math.round(num) : 26;
 }
 
 function translateMode(mode) {
@@ -304,11 +309,11 @@ document.addEventListener("click", async (event) => {
     updateLocalDevice(deviceId, { power_on: next, current_mode: next ? (device.current_mode === "off" ? "cool" : device.current_mode) : "off" });
     await control(deviceId, "power", next);
   } else if (action === "temp-down") {
-    const nextTemp = (device.target_temperature || 26) - 1;
+    const nextTemp = tempStep(device.target_temperature || 26) - 1;
     updateLocalDevice(deviceId, { target_temperature: nextTemp });
     await control(deviceId, "temperature", nextTemp);
   } else if (action === "temp-up") {
-    const nextTemp = (device.target_temperature || 26) + 1;
+    const nextTemp = tempStep(device.target_temperature || 26) + 1;
     updateLocalDevice(deviceId, { target_temperature: nextTemp });
     await control(deviceId, "temperature", nextTemp);
   }
@@ -318,7 +323,11 @@ document.addEventListener("change", async (event) => {
   const target = event.target;
   if (!target.matches("select[data-action]")) return;
   const updates = target.dataset.action === "mode" ? { current_mode: target.value, power_on: target.value !== "off" } : { fan_speed: target.value };
-  updateLocalDevice(target.dataset.id, updates);
+  if (target.dataset.action === "mode") {
+    updateLocalDevice(target.dataset.id, updates);
+  } else {
+    updateLocalDevice(target.dataset.id, updates);
+  }
   await control(target.dataset.id, target.dataset.action, target.value);
 });
 
