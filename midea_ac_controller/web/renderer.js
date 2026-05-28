@@ -2,8 +2,7 @@ const state = {
   devices: [],
   loggedIn: false,
   deviceSignature: "",
-  stateTimer: null,
-  refreshTimer: null,
+  lastUpdatedAt: null,
   statePollBusy: false,
   refreshPollBusy: false,
 };
@@ -22,14 +21,16 @@ function el(id) {
 }
 
 function renderLogs(lines = []) {
-  el("logs").textContent = lines.join("\n");
   const box = el("logs");
+  box.textContent = lines.join("\n");
   box.scrollTop = box.scrollHeight;
 }
 
 function renderStatus(data) {
   state.loggedIn = Boolean(data.logged_in);
+  state.lastUpdatedAt = new Date();
   el("statusBar").textContent = state.loggedIn ? `已登录，设备 ${data.device_count} 台` : "未登录";
+  el("syncBar").textContent = state.lastUpdatedAt ? `最后更新 ${state.lastUpdatedAt.toLocaleTimeString()}` : "等待同步";
   renderLogs(data.logs || []);
 }
 
@@ -61,27 +62,47 @@ function renderDevices(devices = []) {
   for (const d of devices) {
     const modeValue = d.current_mode || "cool";
     const fanValue = d.fan_speed || "auto";
+    const onlineClass = d.online ? "online" : "offline";
     const card = document.createElement("article");
     card.className = "card";
     card.innerHTML = `
-      <h3>${d.name}</h3>
-      <div>设备号：${d.id}</div>
-      <div>温度：${d.current_temperature ?? "-"} / ${d.target_temperature ?? "-"}</div>
-      <div>模式：${modeValue}　风速：${fanValue}</div>
-      <div class="row">
-        <button data-action="power" data-id="${d.id}">${d.power_on ? "关机" : "开机"}</button>
-        <button data-action="temp-down" data-id="${d.id}">-</button>
-        <button data-action="temp-up" data-id="${d.id}">+</button>
+      <div class="card-head">
+        <div class="device-title">
+          <span class="device-dot ${onlineClass}"></span>
+          <h3>${d.name}</h3>
+        </div>
+        <button class="more-btn" type="button" aria-label="设备菜单">··</button>
       </div>
-      <div class="row">
-        <select data-action="mode" data-id="${d.id}">
-          ${buildOptions(["cool", "heat", "auto", "dry", "fan", "off"], modeValue)}
-        </select>
+      <div class="device-meta">设备号：${d.id}</div>
+      <div class="device-meta">当前温度：${d.current_temperature ?? "-"}° 目标温度：${d.target_temperature ?? "-"}°</div>
+      <div class="control-item">
+        <span class="control-label">开机 / 关机</span>
+        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </button>
       </div>
-      <div class="row">
-        <select data-action="fan" data-id="${d.id}">
-          ${buildOptions(["auto", "low", "medium", "high", "silent", "full"], fanValue)}
-        </select>
+      <div class="temp-row">
+        <button class="temp-btn" data-action="temp-down" data-id="${d.id}" aria-label="降低温度">−</button>
+        <div class="temp-value">${Math.round(d.target_temperature ?? 26)}°</div>
+        <button class="temp-btn" data-action="temp-up" data-id="${d.id}" aria-label="升高温度">+</button>
+      </div>
+      <div class="select-grid">
+        <label>
+          <span>模式</span>
+          <select data-action="mode" data-id="${d.id}">
+            ${buildOptions(["cool", "heat", "auto", "dry", "fan", "off"], modeValue)}
+          </select>
+        </label>
+        <label>
+          <span>风速</span>
+          <select data-action="fan" data-id="${d.id}">
+            ${buildOptions(["auto", "low", "medium", "high", "silent", "full"], fanValue)}
+          </select>
+        </label>
+      </div>
+      <div class="card-foot">
+        <span>${d.power_on ? "运行中" : "已关闭"}</span>
+        <span>${modeValue}</span>
       </div>
     `;
     root.appendChild(card);
@@ -169,8 +190,8 @@ document.addEventListener("change", async (event) => {
 });
 
 el("btnLogin").addEventListener("click", login);
-el("btnRefresh").addEventListener("click", refreshAll);
+el("btnRefresh").addEventListener("click", () => (state.loggedIn ? refreshDevices() : refreshAll()));
 
 refreshAll();
-setInterval(pollState, 2000);
-setInterval(pollDevices, 10000);
+setInterval(pollState, 1200);
+setInterval(pollDevices, 7000);

@@ -8,31 +8,49 @@
 </head>
 <body>
   <div class="app-shell">
-    <header class="topbar">
-      <div>
+    <header class="hero">
+      <div class="hero-copy">
         <h1>美的美居多设备控制端</h1>
-        <p>登录美的美居账号后即可控制空调</p>
+        <p>登录后自动同步设备状态与日志，控制会更顺手一些</p>
       </div>
-      <div class="actions">
+      <div class="hero-actions">
         <button id="btnLogin" class="primary">登录账号</button>
         <button id="btnRefresh">刷新全部设备</button>
       </div>
     </header>
 
-    <section class="login-panel">
-      <input id="server" placeholder="服务器" value="美的美居" />
-      <input id="account" placeholder="账号" />
-      <input id="password" placeholder="密码" type="password" />
-      <input id="proxy" placeholder="代理(可选)" />
+    <section class="login-panel glass">
+      <label class="field">
+        <span>服务器</span>
+        <input id="server" placeholder="服务器" value="美的美居" />
+      </label>
+      <label class="field">
+        <span>账号</span>
+        <input id="account" placeholder="账号" />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="password" placeholder="密码" type="password" />
+      </label>
+      <label class="field">
+        <span>代理(可选)</span>
+        <input id="proxy" placeholder="代理(可选)" />
+      </label>
     </section>
 
-    <main>
-      <div id="statusBar" class="status-bar">未登录</div>
+    <main class="dashboard">
+      <div class="status-row">
+        <div id="statusBar" class="status-bar">未登录</div>
+        <div id="syncBar" class="sync-bar">等待同步</div>
+      </div>
       <section id="devices" class="device-grid"></section>
     </main>
 
-    <section class="log-panel">
-      <h2>运行日志输出区</h2>
+    <section class="log-panel glass">
+      <div class="panel-head">
+        <h2>运行日志输出区</h2>
+        <span>自动刷新</span>
+      </div>
       <pre id="logs"></pre>
     </section>
   </div>
