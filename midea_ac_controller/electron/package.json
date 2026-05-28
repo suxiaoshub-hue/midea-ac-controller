@@ -17,6 +17,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "build/**/*",
       "backend/**/*",
       "web/**/*"
     ],
@@ -27,6 +28,7 @@
       }
     ],
     "win": {
+      "icon": "build/icon.ico",
       "target": "portable"
     }
   }

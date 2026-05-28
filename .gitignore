@@ -2,6 +2,8 @@
 .venv/
 dist/
 build/
+!midea_ac_controller/electron/build/
+!midea_ac_controller/electron/build/icon.ico
 *.spec.bak
 midea_auto_cloud/
 midea_ac_controller_preview.png
