@@ -53,6 +53,10 @@ def _normalize_set_temperature(value: Any) -> int:
     return int(max(17, min(30, round(float(value)))))
 
 
+def _control_status(attrs: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in attrs.items() if not str(key).startswith("_")}
+
+
 def _nest_dot_keys(values: dict[str, Any]) -> dict[str, Any]:
     nested: dict[str, Any] = {}
     for key, value in values.items():
@@ -352,30 +356,13 @@ class MideaAcClient:
             if isinstance(event.get("condition_attribute"), dict):
                 node.attrs.update(_flatten_status(event["condition_attribute"]))
 
-    async def set_power(self, device_id: str, on: bool, temperature: Any = None) -> None:
+    async def set_power(self, device_id: str, on: bool) -> None:
         device = self.devices[device_id]
         if device.device_type == 0x21 or device.is_central_node:
-            control = {"run_mode": "2" if on else "0"}
-            if on:
-                target = _normalize_set_temperature(temperature if temperature is not None else device.target_temperature)
-                control["cooling_temp"] = str(target)
-                if str(device.attrs.get("run_mode", "2")) == "3":
-                    control["heating_temp"] = str(target)
-            await self._send_central_control(device, control)
+            await self._send_central_control(device, {"run_mode": "2" if on else "0"})
         else:
-            control = {"power": "on" if on else "off"}
-            if on:
-                control["temperature"] = _normalize_set_temperature(temperature if temperature is not None else device.target_temperature)
-                control["small_temperature"] = 0
-                mode = str(device.attrs.get("mode") or device.attrs.get("mode.current") or "cool")
-                if mode != "off":
-                    control["mode"] = mode
-                if device.attrs.get("wind_speed") is not None:
-                    control["wind_speed"] = device.attrs.get("wind_speed")
-            await self._send_regular_control(device, control)
+            await self._send_regular_control(device, {"power": "on" if on else "off"})
         self.log(f"{device.name}: {'开机' if on else '关机'}")
-        await asyncio.sleep(1.0)
-        await self.refresh_devices(log_refresh=False)
 
     async def set_temperature(self, device_id: str, temperature: float) -> None:
         device = self.devices[device_id]
@@ -424,10 +411,10 @@ class MideaAcClient:
                 model_number=device.model_number,
                 manufacturer_code=device.manufacturer_code,
                 control=nested,
-                status=device.attrs,
+                status=_control_status(device.attrs),
             )
         elif isinstance(self.cloud, MeijuCloud):
-            ok = await self.cloud.send_device_control(device.appliance_code, control=nested, status=device.attrs)
+            ok = await self.cloud.send_device_control(device.appliance_code, control=nested, status=_control_status(device.attrs))
         if not ok:
             raise RuntimeError(f"{device.name}: 控制失败")
         device.attrs.update(control)

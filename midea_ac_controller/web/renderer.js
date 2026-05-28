@@ -332,19 +332,17 @@ document.addEventListener("click", async (event) => {
   if (!device) return;
   if (action === "power") {
     const next = !device.power_on;
-    const targetTemp = tempStep(device.target_temperature || 26);
     state.busyDevices[deviceId] = next ? "开机中" : "关机中";
     if (next) {
       updateLocalDevice(deviceId, {
         power_on: true,
         current_mode: device.current_mode === "off" ? "cool" : device.current_mode,
-        target_temperature: targetTemp,
       });
     } else {
       state.deviceSignature = "";
       renderDevices(state.devices);
     }
-    await control(deviceId, "power", { on: next, temperature: targetTemp });
+    await control(deviceId, "power", next);
   } else if (action === "temp-down") {
     const nextTemp = tempStep(device.target_temperature || 26) - 1;
     updateLocalDevice(deviceId, { target_temperature: nextTemp });
