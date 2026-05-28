@@ -2,7 +2,7 @@
 from pathlib import Path
 
 block_cipher = None
-project_dir = Path(__file__).resolve().parent
+project_dir = Path.cwd()
 
 a = Analysis(
     [str(project_dir / "backend_entry.py")],
@@ -39,4 +39,3 @@ exe = EXE(
     upx=True,
     console=False,
 )
-
