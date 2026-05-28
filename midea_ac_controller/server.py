@@ -33,7 +33,7 @@ class ApiState:
 
     def log(self, message: str):
         self.logs.append(message)
-        self.logs[:] = self.logs[-300:]
+        self.logs[:] = self.logs[-50:]
         logging.info(message)
 
     def run(self, coro):
@@ -172,7 +172,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _snapshot(self, include_logs: bool = True):
         data = STATE.client.snapshot()
         if include_logs:
-            data["logs"] = STATE.logs[-80:]
+            data["logs"] = STATE.logs[-5:]
         return data
 
 

@@ -282,7 +282,7 @@ button.primary {
 }
 .log-panel {
   margin-top: 18px;
-  padding: 16px 18px 18px;
+  padding: 14px 18px 16px;
 }
 .panel-head {
   display: flex;
@@ -300,11 +300,12 @@ button.primary {
   font-size: 13px;
 }
 #logs {
-  min-height: 220px;
+  min-height: 92px;
+  max-height: 120px;
   margin: 0;
   white-space: pre-wrap;
   overflow: auto;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-radius: 14px;
   background: linear-gradient(180deg, rgba(248, 250, 252, 0.95), rgba(241, 245, 249, 0.92));
   border: 1px solid rgba(226, 232, 240, 0.95);

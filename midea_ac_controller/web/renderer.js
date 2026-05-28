@@ -6,6 +6,7 @@ const state = {
   logsSignature: "",
   loginPanelOpen: false,
   verifyTimer: null,
+  pendingChanges: {},
   statePollBusy: false,
   refreshPollBusy: false,
 };
@@ -25,7 +26,8 @@ function el(id) {
 
 function renderLogs(lines = []) {
   const box = el("logs");
-  const signature = lines.join("\n");
+  const visibleLines = lines.slice(-5);
+  const signature = visibleLines.join("\n");
   if (signature === state.logsSignature) return;
   state.logsSignature = signature;
   box.textContent = signature;
@@ -110,6 +112,26 @@ function deviceStateSignature(devices) {
   );
 }
 
+function setPendingDeviceState(deviceId, updates, durationMs = 15000) {
+  state.pendingChanges[deviceId] = {
+    updates,
+    expiresAt: Date.now() + durationMs,
+  };
+}
+
+function mergePendingDeviceState(devices = []) {
+  const now = Date.now();
+  return devices.map((device) => {
+    const pending = state.pendingChanges[device.id];
+    if (!pending) return device;
+    if (pending.expiresAt <= now) {
+      delete state.pendingChanges[device.id];
+      return device;
+    }
+    return { ...device, ...pending.updates };
+  });
+}
+
 function renderDevices(devices = []) {
   const root = el("devices");
   const signature = deviceStateSignature(devices);
@@ -169,14 +191,14 @@ function renderDevices(devices = []) {
 
 async function refreshAll() {
   const data = await api("/api/state");
-  state.devices = data.devices || [];
+  state.devices = mergePendingDeviceState(data.devices || []);
   renderStatus(data);
   renderDevices(state.devices);
 }
 
 async function refreshDevices(quiet = true) {
   const data = await api("/api/refresh", "POST", { quiet });
-  state.devices = data.devices || [];
+  state.devices = mergePendingDeviceState(data.devices || []);
   renderStatus(data.state || {});
   renderDevices(state.devices);
 }
@@ -198,12 +220,12 @@ async function login() {
 
 async function control(deviceId, action, value) {
   const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
-  state.devices = data.devices || [];
+  state.devices = mergePendingDeviceState(data.devices || []);
   state.deviceSignature = "";
   renderStatus(data.state || {});
   renderDevices(state.devices);
   if (data.state && Array.isArray(data.state.logs)) {
-    renderLogs(data.state.logs.slice(-80));
+    renderLogs(data.state.logs);
   }
   scheduleVerifyRefresh();
 }
@@ -213,12 +235,13 @@ function scheduleVerifyRefresh() {
   if (state.verifyTimer) clearTimeout(state.verifyTimer);
   state.verifyTimer = setTimeout(() => {
     refreshDevices(true).catch(() => {});
-  }, 1800);
+  }, 8000);
 }
 
 function updateLocalDevice(deviceId, updates) {
   const device = state.devices.find((item) => item.id === deviceId);
   if (!device) return;
+  setPendingDeviceState(deviceId, updates);
   Object.assign(device, updates);
   state.deviceSignature = "";
   renderDevices(state.devices);
@@ -230,7 +253,8 @@ async function pollState() {
   try {
     const data = await api("/api/state?logs=0");
     renderStatus(data);
-    renderDevices(data.devices || []);
+    state.devices = mergePendingDeviceState(data.devices || []);
+    renderDevices(state.devices);
   } finally {
     state.statePollBusy = false;
   }
