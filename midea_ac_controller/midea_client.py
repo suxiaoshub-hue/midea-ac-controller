@@ -185,7 +185,6 @@ class MideaAcClient:
     async def load_devices(self) -> list[AcDevice]:
         if self.cloud is None:
             raise RuntimeError("请先登录账号")
-        self.log("正在读取家庭和设备列表 ...")
         homes = await self.cloud.list_home()
         all_devices: dict[str, AcDevice] = {}
         if homes:
@@ -196,7 +195,6 @@ class MideaAcClient:
             appliances = await self.cloud.list_appliances(home_id)
             if not appliances:
                 continue
-            self.log(f"{home_name}: 找到 {len(appliances)} 个设备")
             for code, info in appliances.items():
                 device_type = int(info.get("type") or 0)
                 if device_type not in AIR_CONDITIONER_TYPES:
@@ -217,6 +215,7 @@ class MideaAcClient:
                 all_devices[device.id] = device
         self.devices = all_devices
         await self.refresh_devices(log_refresh=False)
+        self.log(f"设备同步完成：找到 {len(self.devices)} 台空调")
         return list(self.devices.values())
 
     async def refresh_devices(self, log_refresh: bool = True) -> list[AcDevice]:
@@ -225,7 +224,7 @@ class MideaAcClient:
         if not self.devices:
             return []
         if log_refresh:
-            self.log("手动刷新空调状态 ...")
+            self.log("手动刷新设备状态")
         base_devices = list(self.devices.values())
         central_gateways = [d for d in base_devices if d.device_type == 0x21 and not d.is_central_node]
         if central_gateways:
@@ -315,6 +314,7 @@ class MideaAcClient:
             await self._send_central_control(device, {"run_mode": "2" if on else "0"})
         else:
             await self._send_regular_control(device, {"power": "on" if on else "off"})
+        self.log(f"{device.name}: {'开机' if on else '关机'}")
 
     async def set_temperature(self, device_id: str, temperature: float) -> None:
         device = self.devices[device_id]
@@ -325,10 +325,12 @@ class MideaAcClient:
             if mode == "3":
                 control["heating_temp"] = str(temperature)
             await self._send_central_control(device, control)
+            self.log(f"{device.name}: 设置温度 {temperature:g}°")
             return
         temp_int = int(temperature)
         control = {"temperature": temp_int, "small_temperature": round(temperature - temp_int, 1)}
         await self._send_regular_control(device, control)
+        self.log(f"{device.name}: 设置温度 {temperature:g}°")
 
     async def set_mode(self, device_id: str, mode: str) -> None:
         device = self.devices[device_id]
@@ -337,6 +339,7 @@ class MideaAcClient:
             await self._send_central_control(device, {"run_mode": run_modes[mode]})
         else:
             await self._send_regular_control(device, {"power": "off"} if mode == "off" else {"power": "on", "mode": mode})
+        self.log(f"{device.name}: 设置模式 {_mode_label(mode)}")
 
     async def set_fan(self, device_id: str, fan: str) -> None:
         device = self.devices[device_id]
@@ -346,11 +349,11 @@ class MideaAcClient:
         else:
             fan_modes = {"silent": 20, "low": 40, "medium": 60, "high": 80, "full": 100, "auto": 102}
             await self._send_regular_control(device, {"wind_speed": fan_modes[fan]})
+        self.log(f"{device.name}: 设置风速 {_fan_label(fan)}")
 
     async def _send_regular_control(self, device: AcDevice, control: dict[str, Any]) -> None:
         if self.cloud is None:
             raise RuntimeError("请先登录账号")
-        self.log(f"{device.name}: 下发控制 {json.dumps(control, ensure_ascii=False)}")
         nested = _nest_dot_keys(control)
         ok = False
         if isinstance(self.cloud, MSmartHomeCloud):
@@ -386,7 +389,6 @@ class MideaAcClient:
             "extflag": str(device.attrs.get("extflag", "0")),
         }
         full_control.update(control)
-        self.log(f"{device.name}: 下发中央空调控制 {json.dumps(full_control, ensure_ascii=False)}")
         ok = await self.cloud.send_central_ac_control(int(master_id), nodeid, modelid, int(idtype), full_control)
         if not ok:
             raise RuntimeError(f"{device.name}: 控制失败")
@@ -426,3 +428,26 @@ def _flatten_status(status: dict[str, Any], prefix: str = "") -> dict[str, Any]:
             if prefix:
                 flat[str(key)] = value
     return flat
+
+
+def _mode_label(mode: str) -> str:
+    return {
+        "cool": "制冷",
+        "heat": "制热",
+        "auto": "自动",
+        "dry": "除湿",
+        "fan": "送风",
+        "off": "关闭",
+    }.get(mode, mode)
+
+
+def _fan_label(fan: str) -> str:
+    return {
+        "auto": "自动",
+        "low": "低风",
+        "medium": "中风",
+        "high": "高风",
+        "silent": "静音",
+        "full": "强风",
+        "off": "关闭",
+    }.get(fan, fan)
