@@ -71,6 +71,9 @@ button.primary {
   padding: 14px;
   margin-bottom: 16px;
 }
+.login-panel.is-hidden {
+  display: none;
+}
 .glass {
   background: var(--panel);
   border: 1px solid rgba(255, 255, 255, 0.7);
@@ -275,6 +278,7 @@ button.primary {
   color: var(--muted);
   font-size: 12px;
   padding-top: 2px;
+  line-height: 1.35;
 }
 .log-panel {
   margin-top: 18px;
@@ -307,6 +311,21 @@ button.primary {
   color: #0f172a;
   line-height: 1.5;
   font-size: 13px;
+}
+button[data-action="power"].is-on,
+.power-switch.is-on {
+  outline: 2px solid rgba(47, 182, 109, 0.18);
+}
+button[data-action="power"].is-on .switch-track,
+.power-switch.is-on .switch-track {
+  background: rgba(255, 255, 255, 0.44);
+}
+button[data-action="power"].is-on .switch-thumb,
+.power-switch.is-on .switch-thumb {
+  left: 44px;
+}
+select option {
+  color: #0f172a;
 }
 @media (max-width: 1080px) {
   .login-panel {

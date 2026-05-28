@@ -216,15 +216,16 @@ class MideaAcClient:
                 )
                 all_devices[device.id] = device
         self.devices = all_devices
-        await self.refresh_devices()
+        await self.refresh_devices(log_refresh=False)
         return list(self.devices.values())
 
-    async def refresh_devices(self) -> list[AcDevice]:
+    async def refresh_devices(self, log_refresh: bool = True) -> list[AcDevice]:
         if self.cloud is None:
             raise RuntimeError("请先登录账号")
         if not self.devices:
             return []
-        self.log("正在刷新空调状态 ...")
+        if log_refresh:
+            self.log("手动刷新空调状态 ...")
         base_devices = list(self.devices.values())
         central_gateways = [d for d in base_devices if d.device_type == 0x21 and not d.is_central_node]
         if central_gateways:

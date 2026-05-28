@@ -75,16 +75,16 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_empty()
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         try:
             if path == "/api/health":
                 self._send_json({"ok": True})
             elif path == "/api/config":
                 self._send_json(STATE.load_config())
             elif path == "/api/state":
-                data = STATE.client.snapshot()
-                data["logs"] = STATE.logs[-80:]
-                self._send_json(data)
+                include_logs = "logs=0" not in parsed.query
+                self._send_json(self._snapshot(include_logs=include_logs))
             elif path == "/api/devices":
                 self._send_json({"devices": [d.to_dict() for d in STATE.client.devices.values()]})
             else:
@@ -108,10 +108,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 if not ok:
                     raise RuntimeError("登录失败，请检查账号、密码、服务器和网络")
                 devices = STATE.run(STATE.client.load_devices())
-                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": STATE.client.snapshot()})
+                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot()})
             elif path == "/api/refresh":
-                devices = STATE.run(STATE.client.refresh_devices())
-                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": STATE.client.snapshot()})
+                quiet = bool(payload.get("quiet"))
+                devices = STATE.run(STATE.client.refresh_devices(log_refresh=not quiet))
+                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot(include_logs=not quiet)})
             elif path == "/api/control":
                 device_id = payload.get("device_id")
                 action = payload.get("action")
@@ -128,8 +129,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     STATE.run(STATE.client.set_fan(device_id, str(value)))
                 else:
                     raise ValueError(f"未知控制动作: {action}")
-                devices = STATE.run(STATE.client.refresh_devices())
-                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": STATE.client.snapshot()})
+                devices = list(STATE.client.devices.values())
+                self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot()})
             else:
                 self._send_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -167,6 +168,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def _snapshot(self, include_logs: bool = True):
+        data = STATE.client.snapshot()
+        if include_logs:
+            data["logs"] = STATE.logs[-80:]
+        return data
 
 
 def main():
