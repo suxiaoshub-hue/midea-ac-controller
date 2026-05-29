@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "com.codex.mideaaccontroller",
-    "productName": "美的美居多设备控制端",
+    "productName": "白熊TT自用空调控制系统",
     "files": [
       "main.js",
       "preload.js",

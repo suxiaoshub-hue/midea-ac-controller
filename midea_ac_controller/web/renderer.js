@@ -1,5 +1,6 @@
 const API_PORT = new URLSearchParams(window.location.search).get("apiPort") || "18765";
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
+const APP_TITLE = "白熊TT自用空调控制系统";
 
 const state = {
   devices: [],
@@ -50,7 +51,7 @@ async function loadVersion() {
     const commit = info.commit || "local";
     const builtAt = formatBuildTime(info.built_at);
     el("versionBadge").textContent = `v${version} · ${commit} · ${builtAt}`;
-    document.title = `美的美居多设备控制端 v${version} (${commit})`;
+    document.title = `${APP_TITLE} v${version} (${commit})`;
   } catch {
     el("versionBadge").textContent = "vdev · local";
   }

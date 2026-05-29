@@ -1,4 +1,4 @@
-# 美的美居多设备控制端
+# 白熊TT自用空调控制系统
 
 这是一个基于 `sususweet/midea_auto_cloud` 核心云端代码做出来的 Windows 桌面控制端。
 

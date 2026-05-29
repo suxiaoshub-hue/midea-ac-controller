@@ -30,7 +30,7 @@ class TkLogHandler(logging.Handler):
 class MideaAcApp:
     def __init__(self, root: Tk):
         self.root = root
-        self.root.title("美的美居多设备控制端")
+        self.root.title("白熊TT自用空调控制系统")
         self.root.geometry("1120x760")
         self.root.minsize(880, 620)
 
@@ -77,7 +77,7 @@ class MideaAcApp:
         main = ttk.Frame(self.root, padding=(24, 20))
         main.pack(fill="both", expand=True)
 
-        ttk.Label(main, text="美的美居多设备控制端", style="Title.TLabel").pack(anchor="center", pady=(0, 18))
+        ttk.Label(main, text="白熊TT自用空调控制系统", style="Title.TLabel").pack(anchor="center", pady=(0, 18))
 
         login = ttk.Frame(main)
         login.pack(fill="x", pady=(0, 18))

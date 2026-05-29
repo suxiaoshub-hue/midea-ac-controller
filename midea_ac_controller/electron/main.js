@@ -4,6 +4,7 @@ const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
 
+const APP_TITLE = "白熊TT自用空调控制系统";
 let mainWindow;
 let backend;
 let tray;
@@ -15,15 +16,9 @@ if (!gotTheLock) {
 }
 
 function createTrayIcon() {
-  const svg = `
-    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
-      <rect width="32" height="32" rx="8" fill="#1f7af5"/>
-      <path d="M9 12h14a3 3 0 0 1 3 3v3a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3v-3a3 3 0 0 1 3-3Z" fill="#fff"/>
-      <path d="M11 20v3M16 20v3M21 20v3" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-      <circle cx="23" cy="16" r="1.5" fill="#1f7af5"/>
-    </svg>
-  `;
-  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`);
+  const iconPath = path.join(__dirname, "build", "icon.png");
+  const image = nativeImage.createFromPath(iconPath);
+  return image.isEmpty() ? nativeImage.createFromPath(path.join(__dirname, "build", "icon.ico")) : image.resize({ width: 20, height: 20 });
 }
 
 function createWindow() {
@@ -32,6 +27,7 @@ function createWindow() {
     height: 900,
     minWidth: 980,
     minHeight: 700,
+    title: APP_TITLE,
     icon: path.join(__dirname, "build", "icon.ico"),
     backgroundColor: "#eef4fb",
     webPreferences: {
@@ -61,7 +57,7 @@ function showMainWindow() {
 
 function createTray() {
   tray = new Tray(createTrayIcon());
-  tray.setToolTip("美的美居多设备控制端");
+  tray.setToolTip(APP_TITLE);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: "打开主界面", click: showMainWindow },
     { type: "separator" },
