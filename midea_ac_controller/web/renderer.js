@@ -1,4 +1,5 @@
-const MODE_PREFS_KEY = "midea_ac_controller.preferred_modes";
+const API_PORT = new URLSearchParams(window.location.search).get("apiPort") || "18765";
+const API_BASE = `http://127.0.0.1:${API_PORT}`;
 
 const state = {
   devices: [],
@@ -8,16 +9,14 @@ const state = {
   logsSignature: "",
   loginPanelOpen: false,
   verifyTimer: null,
-  pendingChanges: {},
   busyDevices: {},
   statePollBusy: false,
   refreshPollBusy: false,
   interactingUntil: 0,
-  preferredModes: loadPreferredModes(),
 };
 
 async function api(path, method = "GET", body) {
-  const res = await fetch(`http://127.0.0.1:18765${path}`, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
@@ -29,25 +28,12 @@ function el(id) {
   return document.getElementById(id);
 }
 
-function loadPreferredModes() {
-  try {
-    const raw = localStorage.getItem(MODE_PREFS_KEY);
-    const data = raw ? JSON.parse(raw) : {};
-    return data && typeof data === "object" ? data : {};
-  } catch {
-    return {};
-  }
+function isKnownMode(mode) {
+  return MODE_OPTIONS.some((item) => item.value === mode);
 }
 
-function savePreferredMode(deviceId, mode) {
-  if (!deviceId || !mode || mode === "off") return;
-  state.preferredModes[deviceId] = mode;
-  localStorage.setItem(MODE_PREFS_KEY, JSON.stringify(state.preferredModes));
-}
-
-function preferredModeFor(device) {
-  if (!device) return "";
-  return state.preferredModes[device.id] || device.preferred_mode || "";
+function isKnownFan(fan) {
+  return FAN_OPTIONS.some((item) => item.value === fan);
 }
 
 function formatBuildTime(value) {
@@ -70,6 +56,18 @@ async function loadVersion() {
   }
 }
 
+async function loadConfig() {
+  try {
+    const config = await api("/api/config");
+    if (config.server) el("server").value = config.server;
+    if (config.account) el("account").value = config.account;
+    if (config.password) el("password").value = config.password;
+    if (config.proxy) el("proxy").value = config.proxy;
+  } catch {
+    // The login form still works even when saved config cannot be loaded.
+  }
+}
+
 function renderLogs(lines = []) {
   const box = el("logs");
   const visibleLines = lines.slice(-5);
@@ -78,6 +76,11 @@ function renderLogs(lines = []) {
   state.logsSignature = signature;
   box.textContent = signature;
   box.scrollTop = box.scrollHeight;
+}
+
+function appendLocalLog(line) {
+  const current = el("logs").textContent ? el("logs").textContent.split("\n").filter(Boolean) : [];
+  renderLogs([...current, line]);
 }
 
 function renderStatus(data) {
@@ -168,7 +171,6 @@ function deviceStateSignature(devices) {
       d.current_temperature,
       d.target_temperature,
       state.busyDevices[d.id] || "",
-      pendingPowerValue(d.id, d.power_on),
     ]),
   );
 }
@@ -187,40 +189,8 @@ function sortDevices(devices) {
   });
 }
 
-function setPendingDeviceState(deviceId, updates, durationMs = 15000) {
-  state.pendingChanges[deviceId] = {
-    updates,
-    expiresAt: Date.now() + durationMs,
-  };
-}
-
-function clearPendingDeviceState(deviceId) {
-  delete state.pendingChanges[deviceId];
-}
-
-function pendingPowerValue(deviceId, fallback) {
-  const pending = state.pendingChanges[deviceId];
-  if (!pending || pending.expiresAt <= Date.now()) return fallback;
-  if (Object.prototype.hasOwnProperty.call(pending.updates, "power_on")) {
-    return pending.updates.power_on;
-  }
-  return fallback;
-}
-
-function mergePendingDeviceState(devices = []) {
-  const now = Date.now();
-  return devices.map((device) => {
-    const pending = state.pendingChanges[device.id];
-    if (!pending) return device;
-    if (pending.expiresAt <= now) {
-      delete state.pendingChanges[device.id];
-      return device;
-    }
-    return { ...device, ...pending.updates };
-  });
-}
-
 function renderDevices(devices = []) {
+  if (document.activeElement && document.activeElement.matches("select[data-action]")) return;
   if (Date.now() < state.interactingUntil) return;
   const root = el("devices");
   const sortedDevices = sortDevices(devices);
@@ -229,13 +199,12 @@ function renderDevices(devices = []) {
   state.deviceSignature = signature;
   root.innerHTML = "";
   for (const d of sortedDevices) {
-    const modeValue = d.power_on
-      ? (d.current_mode && d.current_mode !== "off" ? d.current_mode : preferredModeFor(d) || "cool")
-      : (preferredModeFor(d) || d.current_mode || "off");
-    const fanValue = d.fan_speed || "auto";
+    const reportedMode = d.current_mode || (d.power_on ? "" : "off");
+    const modeValue = isKnownMode(reportedMode) ? reportedMode : "off";
+    const reportedFan = d.fan_speed || "auto";
+    const fanValue = isKnownFan(reportedFan) ? reportedFan : "auto";
     const onlineClass = d.online ? "online" : "offline";
-    const visualPowerOn = pendingPowerValue(d.id, d.power_on);
-    const stateText = visualPowerOn ? "开" : "关";
+    const stateText = d.power_on ? "开" : "关";
     const busyText = state.busyDevices[d.id];
     const card = document.createElement("article");
     card.className = "card";
@@ -251,31 +220,31 @@ function renderDevices(devices = []) {
       <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
-        <button class="power-switch ${visualPowerOn ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机" ${busyText ? "disabled" : ""}>
+        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机" ${busyText ? "disabled" : ""}>
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </button>
       </div>
       <div class="temp-row">
-        <button class="temp-btn" data-action="temp-down" data-id="${d.id}" aria-label="降低温度">−</button>
+        <button class="temp-btn" data-action="temp-down" data-id="${d.id}" aria-label="降低温度" ${busyText ? "disabled" : ""}>−</button>
         <div class="temp-value">${formatTemp(d.target_temperature ?? 26)}°</div>
-        <button class="temp-btn" data-action="temp-up" data-id="${d.id}" aria-label="升高温度">+</button>
+        <button class="temp-btn" data-action="temp-up" data-id="${d.id}" aria-label="升高温度" ${busyText ? "disabled" : ""}>+</button>
       </div>
       <div class="select-grid">
         <label>
           <span>模式</span>
-          <select data-action="mode" data-id="${d.id}">
+          <select data-action="mode" data-id="${d.id}" ${busyText ? "disabled" : ""}>
             ${buildOptions(MODE_OPTIONS, modeValue)}
           </select>
         </label>
         <label>
           <span>风速</span>
-          <select data-action="fan" data-id="${d.id}">
+          <select data-action="fan" data-id="${d.id}" ${busyText ? "disabled" : ""}>
             ${buildOptions(FAN_OPTIONS, fanValue)}
           </select>
         </label>
       </div>
       <div class="card-foot">
-        <span>${busyText || (visualPowerOn ? "运行中" : "已关闭")}</span>
+        <span>${busyText || (d.power_on ? "运行中" : "已关闭")}</span>
         <span>状态：${stateText} | 模式：${translateMode(modeValue)} | 风速：${translateFan(fanValue)}</span>
       </div>
     `;
@@ -285,14 +254,14 @@ function renderDevices(devices = []) {
 
 async function refreshAll() {
   const data = await api("/api/state");
-  state.devices = mergePendingDeviceState(data.devices || []);
+  state.devices = data.devices || [];
   renderStatus(data);
   renderDevices(state.devices);
 }
 
 async function refreshDevices(quiet = true) {
   const data = await api("/api/refresh", "POST", { quiet });
-  state.devices = mergePendingDeviceState(data.devices || []);
+  state.devices = data.devices || [];
   renderStatus(data.state || {});
   renderDevices(state.devices);
 }
@@ -315,7 +284,10 @@ async function login() {
 async function control(deviceId, action, value) {
   try {
     const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
-    state.devices = mergePendingDeviceState(data.devices || []);
+    if (data.ok === false) {
+      throw new Error(data.error || "控制失败");
+    }
+    state.devices = data.devices || [];
     state.deviceSignature = "";
     renderStatus(data.state || {});
     renderDevices(state.devices);
@@ -323,11 +295,13 @@ async function control(deviceId, action, value) {
       renderLogs(data.state.logs);
     }
     if (action === "power") {
-      clearPendingDeviceState(deviceId);
       await refreshDevices(true);
     } else {
       scheduleVerifyRefresh();
     }
+  } catch (error) {
+    appendLocalLog(`控制失败：${error.message || error}`);
+    await refreshDevices(true).catch(() => {});
   } finally {
     delete state.busyDevices[deviceId];
     state.deviceSignature = "";
@@ -343,15 +317,6 @@ function scheduleVerifyRefresh() {
   }, 8000);
 }
 
-function updateLocalDevice(deviceId, updates) {
-  const device = state.devices.find((item) => item.id === deviceId);
-  if (!device) return;
-  setPendingDeviceState(deviceId, updates);
-  Object.assign(device, updates);
-  state.deviceSignature = "";
-  renderDevices(state.devices);
-}
-
 function holdDeviceRender(durationMs = 1200) {
   state.interactingUntil = Date.now() + durationMs;
 }
@@ -363,7 +328,7 @@ async function pollState() {
   try {
     const data = await api("/api/state?logs=0");
     renderStatus(data);
-    state.devices = mergePendingDeviceState(data.devices || []);
+    state.devices = data.devices || [];
     renderDevices(state.devices);
   } finally {
     state.statePollBusy = false;
@@ -391,26 +356,20 @@ document.addEventListener("click", async (event) => {
   if (action === "power") {
     const next = !device.power_on;
     state.busyDevices[deviceId] = next ? "开机中" : "关机中";
-    if (next) {
-      const preferredMode = preferredModeFor(device) || device.current_mode || "cool";
-      updateLocalDevice(deviceId, {
-        power_on: true,
-        current_mode: preferredMode,
-        preferred_mode: preferredMode,
-      });
-    } else {
-      setPendingDeviceState(deviceId, { power_on: false }, 5000);
-      state.deviceSignature = "";
-      renderDevices(state.devices);
-    }
+    state.deviceSignature = "";
+    renderDevices(state.devices);
     await control(deviceId, "power", next);
   } else if (action === "temp-down") {
     const nextTemp = tempStep(device.target_temperature || 26) - 1;
-    updateLocalDevice(deviceId, { target_temperature: nextTemp });
+    state.busyDevices[deviceId] = "设置温度中";
+    state.deviceSignature = "";
+    renderDevices(state.devices);
     await control(deviceId, "temperature", nextTemp);
   } else if (action === "temp-up") {
     const nextTemp = tempStep(device.target_temperature || 26) + 1;
-    updateLocalDevice(deviceId, { target_temperature: nextTemp });
+    state.busyDevices[deviceId] = "设置温度中";
+    state.deviceSignature = "";
+    renderDevices(state.devices);
     await control(deviceId, "temperature", nextTemp);
   }
 });
@@ -418,19 +377,10 @@ document.addEventListener("click", async (event) => {
 document.addEventListener("change", async (event) => {
   const target = event.target;
   if (!target.matches("select[data-action]")) return;
-  holdDeviceRender(1800);
-  const updates =
-    target.dataset.action === "mode"
-      ? {
-          current_mode: target.value,
-          power_on: target.value !== "off",
-          ...(target.value !== "off" ? { preferred_mode: target.value } : {}),
-        }
-      : { fan_speed: target.value };
-  if (target.dataset.action === "mode" && target.value !== "off") {
-    savePreferredMode(target.dataset.id, target.value);
-  }
-  updateLocalDevice(target.dataset.id, updates);
+  holdDeviceRender(200);
+  state.busyDevices[target.dataset.id] = target.dataset.action === "mode" ? "设置模式中" : "设置风速中";
+  state.deviceSignature = "";
+  setTimeout(() => renderDevices(state.devices), 250);
   await control(target.dataset.id, target.dataset.action, target.value);
 });
 
@@ -452,6 +402,7 @@ el("btnLogin").addEventListener("click", () => {
 el("btnRefresh").addEventListener("click", () => (state.loggedIn ? refreshDevices(false) : refreshAll()));
 
 loadVersion();
+loadConfig();
 refreshAll();
 setInterval(pollState, 5000);
 setInterval(pollDevices, 30000);

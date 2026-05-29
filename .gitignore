@@ -1,5 +1,8 @@
 .DS_Store
 .venv/
+__pycache__/
+**/__pycache__/
+downloads/
 dist/
 build/
 !midea_ac_controller/electron/build/

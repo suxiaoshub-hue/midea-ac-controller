@@ -26,6 +26,7 @@ class ApiState:
         self.thread.start()
         self.logs: list[str] = []
         self.client = MideaAcClient(APP_DIR, self.log)
+        self.auto_login_attempted = False
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -57,6 +58,24 @@ class ApiState:
         }
         CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def ensure_logged_in_from_config(self) -> None:
+        if self.client.cloud is not None or self.auto_login_attempted:
+            return
+        self.auto_login_attempted = True
+        config = self.load_config()
+        account = config.get("account") or ""
+        password = config.get("password") or ""
+        if not account or not password:
+            return
+        server = config.get("server") or SERVER_MEIJU
+        proxy = config.get("proxy") or ""
+        self.log("正在使用已保存账号自动登录 ...")
+        ok = self.run(self.client.login(server, account, password, proxy))
+        if not ok:
+            self.log("自动登录失败，请重新登录账号")
+            return
+        self.run(self.client.load_devices())
+
     def close(self):
         try:
             self.run(self.client.close())
@@ -83,6 +102,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/config":
                 self._send_json(STATE.load_config())
             elif path == "/api/state":
+                STATE.ensure_logged_in_from_config()
                 include_logs = "logs=0" not in parsed.query
                 self._send_json(self._snapshot(include_logs=include_logs))
             elif path == "/api/devices":
@@ -110,6 +130,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 devices = STATE.run(STATE.client.load_devices())
                 self._send_json({"ok": True, "devices": [d.to_dict() for d in STATE.client.device_list()], "state": self._snapshot()})
             elif path == "/api/refresh":
+                STATE.ensure_logged_in_from_config()
                 quiet = bool(payload.get("quiet"))
                 devices = STATE.run(STATE.client.refresh_devices(log_refresh=not quiet))
                 self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot(include_logs=not quiet)})

@@ -75,6 +75,14 @@ def _nest_dot_keys(values: dict[str, Any]) -> dict[str, Any]:
     return nested
 
 
+def _first_present(attrs: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = attrs.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
 @dataclass
 class AcDevice:
     id: str
@@ -118,7 +126,7 @@ class AcDevice:
             explicit = _first_temperature(self.attrs, (*mode_keys, "target_temperature", "temperature.set", "set_temperature", "temp_set"))
             return explicit or local_target or 26.0
 
-        mode = str(self.attrs.get("mode") or self.attrs.get("mode.current") or "cool")
+        mode = str(_first_present(self.attrs, ("mode_current", "mode.current", "mode")) or "cool")
         mode_keys = ("heat_temp_set", "heating_temp") if mode == "heat" else ("cool_temp_set", "cooling_temp")
         explicit = _first_temperature(
             self.attrs,
@@ -127,7 +135,9 @@ class AcDevice:
                 "target_temperature",
                 "temperature.target",
                 "temperature.set",
+                "temperature.current",
                 "temperature_setting",
+                "temperature_current",
                 "set_temperature",
                 "temp_set",
                 "target_temp",
@@ -153,30 +163,38 @@ class AcDevice:
         if self.device_type == 0x21 or self.is_central_node:
             run_modes = {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}
             if not self.power_on:
-                return self.preferred_mode or "off"
+                return "off"
             mode = self.attrs.get("run_mode", "2")
             resolved = run_modes.get(str(mode), str(mode))
-            return resolved if resolved != "off" else (self.preferred_mode or "cool")
+            return resolved if resolved != "off" else "off"
         if not self.power_on:
-            return self.preferred_mode or "off"
-        mode = self.attrs.get("mode") or self.attrs.get("mode.current")
+            return "off"
+        mode = _first_present(self.attrs, ("mode_current", "mode.current", "mode"))
         if isinstance(mode, str) and mode and mode != "off":
             return mode
-        return self.preferred_mode or "cool"
+        return "off"
 
     @property
     def fan_speed(self) -> str:
         if self.device_type == 0x21 or self.is_central_node:
             fan_modes = {"0": "off", "1": "low", "3": "medium", "5": "high", "8": "auto"}
             return fan_modes.get(str(self.attrs.get("fan_speed", "8")), str(self.attrs.get("fan_speed", "8")))
-        fan = self.attrs.get("wind_speed")
+        fan = _first_present(self.attrs, ("wind_speed_level", "wind_speed.level", "wind_speed"))
+        if isinstance(fan, str) and fan in {"auto", "silent", "low", "medium", "high", "full"}:
+            return fan
         reverse = {20: "silent", 40: "low", 60: "medium", 80: "high", 100: "full", 102: "auto"}
+        level_reverse = {1: "low", 2: "low", 3: "medium", 4: "medium", 5: "high", 6: "auto", 8: "auto"}
         if isinstance(fan, str):
             try:
                 fan = int(float(fan))
             except (TypeError, ValueError):
                 return fan
-        return reverse.get(int(fan), "auto") if fan is not None else "auto"
+        if fan is None:
+            return "auto"
+        fan_int = int(fan)
+        if "wind_speed.level" in self.attrs or "wind_speed_level" in self.attrs:
+            return level_reverse.get(fan_int, reverse.get(fan_int, "auto"))
+        return reverse.get(fan_int, level_reverse.get(fan_int, "auto"))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -308,7 +326,7 @@ class MideaAcClient:
         elif isinstance(self.cloud, MeijuCloud):
             status = await self.cloud.get_device_status(device.appliance_code, query={})
         if isinstance(status, dict):
-            device.attrs.update(_flatten_status(status))
+            device.attrs = _flatten_status(status)
             device.online = True
 
     async def _refresh_central_gateways(self, gateways: list[AcDevice]) -> None:
@@ -327,7 +345,7 @@ class MideaAcClient:
             if gateway is None:
                 continue
             attr = ((appliance.get("extraData") or {}).get("attr") or {})
-            gateway.attrs.update(_flatten_status(attr))
+            gateway.attrs = _flatten_status(attr)
             gateway.master_id = str(attr.get("masterId") or gateway.appliance_code)
             gateway.nodeid = attr.get("nodeid") or gateway.nodeid
             gateway.modelid = attr.get("modelid") or gateway.modelid
@@ -362,22 +380,31 @@ class MideaAcClient:
                     preferred_mode=self._preferred_mode(device_id),
                 )
                 self.devices[device_id] = node
-            node.attrs.update(_flatten_status(event))
+            node.attrs = _flatten_status(event)
             if isinstance(event.get("condition_attribute"), dict):
                 node.attrs.update(_flatten_status(event["condition_attribute"]))
 
     async def set_power(self, device_id: str, on: bool) -> None:
         device = self.devices[device_id]
         if device.device_type == 0x21 or device.is_central_node:
-            await self._send_central_control(device, {"run_mode": "2" if on else "0"})
-            if on:
-                preferred_mode = self._active_preferred_mode(device)
-                if preferred_mode:
-                    self.log(f"{device.name}: 恢复模式 {_mode_label(preferred_mode)}")
-                    await asyncio.sleep(0.5)
-                    await self.set_mode(device_id, preferred_mode)
+            preferred_mode = self._active_preferred_mode(device)
+            next_mode = self._central_run_mode(preferred_mode or "cool") if on else "0"
+            await self._send_central_control(device, {"run_mode": next_mode})
+            applied = await self._verify_power_applied(device_id, on)
+            if not applied:
+                actual = "开机" if self.devices[device_id].power_on else "关机"
+                raise RuntimeError(f"{device.name}: 电源未生效，设备仍为{actual}")
+            if on and preferred_mode:
+                mode_applied = await self._verify_mode_applied(device_id, preferred_mode)
+                if not mode_applied:
+                    actual = self._reported_mode(self.devices[device_id]) or "未知"
+                    raise RuntimeError(f"{device.name}: 恢复模式未生效，设备仍为 {_mode_label(actual)}")
         else:
             await self._send_regular_control(device, {"power": "on" if on else "off"})
+            applied = await self._verify_power_applied(device_id, on)
+            if not applied:
+                actual = "开机" if self.devices[device_id].power_on else "关机"
+                raise RuntimeError(f"{device.name}: 电源未生效，设备仍为{actual}")
             if on:
                 preferred_mode = self._active_preferred_mode(device)
                 if preferred_mode:
@@ -390,26 +417,45 @@ class MideaAcClient:
         device = self.devices[device_id]
         temperature = _normalize_set_temperature(temperature)
         if device.device_type == 0x21 or device.is_central_node:
-            mode = str(device.attrs.get("run_mode", "2"))
+            mode = self._temperature_mode(device)
             control = {"cooling_temp": str(temperature)}
-            if mode == "3":
+            if mode == "heat":
                 control["heating_temp"] = str(temperature)
             await self._send_central_control(device, control)
+            applied = await self._verify_temperature_applied(device_id, temperature, mode)
+            if not applied:
+                actual = format_temperature(self.devices[device_id].target_temperature)
+                raise RuntimeError(f"{device.name}: 温度未生效，设备目标温度仍为 {actual}°")
             self.log(f"{device.name}: 设置温度 {temperature:g}°")
             return
-        control = {"temperature": temperature, "small_temperature": 0}
+        mode = self._temperature_mode(device)
+        control = self._regular_temperature_control(device, temperature)
         await self._send_regular_control(device, control)
+        applied = await self._verify_temperature_applied(device_id, temperature, mode)
+        if not applied:
+            actual = format_temperature(self.devices[device_id].target_temperature)
+            raise RuntimeError(f"{device.name}: 温度未生效，设备目标温度仍为 {actual}°")
         self.log(f"{device.name}: 设置温度 {temperature:g}°")
 
     async def set_mode(self, device_id: str, mode: str) -> None:
         device = self.devices[device_id]
-        if mode != "off":
-            self._remember_preferred_mode(device, mode)
         if device.device_type == 0x21 or device.is_central_node:
             run_modes = {"off": "0", "fan": "1", "cool": "2", "heat": "3", "auto": "4", "dry": "5"}
             await self._send_central_control(device, {"run_mode": run_modes[mode]})
         else:
-            await self._send_regular_control(device, {"power": "off"} if mode == "off" else {"power": "on", "mode": mode})
+            await self._send_regular_control(device, {"power": "off"} if mode == "off" else self._regular_mode_control(device, mode))
+        if mode == "off":
+            applied = await self._verify_power_applied(device_id, False)
+            if not applied:
+                actual = "开机" if self.devices[device_id].power_on else "关机"
+                raise RuntimeError(f"{device.name}: 关机未生效，设备仍为{actual}")
+        else:
+            applied = await self._verify_mode_applied(device_id, mode)
+            if not applied:
+                actual = self._reported_mode(self.devices[device_id]) or "未知"
+                self.log(f"{device.name}: 模式未生效，设备仍为 {_mode_label(actual)}")
+                raise RuntimeError(f"{device.name}: 模式未生效，设备仍为 {_mode_label(actual)}")
+            self._remember_preferred_mode(device, mode)
         self.log(f"{device.name}: 设置模式 {_mode_label(mode)}")
 
     async def set_fan(self, device_id: str, fan: str) -> None:
@@ -418,8 +464,11 @@ class MideaAcClient:
             fan_modes = {"off": "0", "low": "1", "medium": "3", "high": "5", "auto": "8"}
             await self._send_central_control(device, {"fan_speed": fan_modes[fan]})
         else:
-            fan_modes = {"silent": 20, "low": 40, "medium": 60, "high": 80, "full": 100, "auto": 102}
-            await self._send_regular_control(device, {"wind_speed": fan_modes[fan]})
+            await self._send_regular_control(device, self._regular_fan_control(device, fan))
+        applied = await self._verify_fan_applied(device_id, fan)
+        if not applied:
+            actual = self.devices[device_id].fan_speed
+            raise RuntimeError(f"{device.name}: 风速未生效，设备仍为 {_fan_label(actual)}")
         self.log(f"{device.name}: 设置风速 {_fan_label(fan)}")
 
     async def _send_regular_control(self, device: AcDevice, control: dict[str, Any]) -> None:
@@ -441,11 +490,6 @@ class MideaAcClient:
             ok = await self.cloud.send_device_control(device.appliance_code, control=nested, status=_control_status(device.attrs))
         if not ok:
             raise RuntimeError(f"{device.name}: 控制失败")
-        device.attrs.update(control)
-        if "temperature" in control:
-            device.attrs["_local_target_temperature"] = float(control["temperature"]) + float(control.get("small_temperature") or 0)
-        elif "cooling_temp" in control or "heating_temp" in control:
-            device.attrs["_local_target_temperature"] = control.get("cooling_temp") or control.get("heating_temp")
 
     async def _send_central_control(self, device: AcDevice, control: dict[str, Any]) -> None:
         if self.cloud is None:
@@ -467,9 +511,6 @@ class MideaAcClient:
         ok = await self.cloud.send_central_ac_control(int(master_id), nodeid, modelid, int(idtype), full_control)
         if not ok:
             raise RuntimeError(f"{device.name}: 控制失败")
-        device.attrs.update(control)
-        if "cooling_temp" in control or "heating_temp" in control:
-            device.attrs["_local_target_temperature"] = control.get("cooling_temp") or control.get("heating_temp")
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -531,6 +572,121 @@ class MideaAcClient:
     def _central_run_mode(self, mode: str) -> str:
         return {"cool": "2", "heat": "3", "auto": "4", "dry": "5", "fan": "1"}.get(mode, "2")
 
+    def _temperature_mode(self, device: AcDevice) -> str:
+        if device.power_on:
+            mode = self._reported_mode(device)
+            if mode and mode != "off":
+                return mode
+        preferred_mode = self._active_preferred_mode(device)
+        if preferred_mode:
+            return preferred_mode
+        mode = self._reported_mode(device)
+        return mode if mode and mode != "off" else "cool"
+
+    def _regular_mode_control(self, device: AcDevice, mode: str) -> dict[str, Any]:
+        key = "mode"
+        if "mode_current" in device.attrs:
+            key = "mode_current"
+        elif "mode.current" in device.attrs:
+            key = "mode.current"
+        return {"power": "on", key: mode}
+
+    def _regular_temperature_control(self, device: AcDevice, temperature: int) -> dict[str, Any]:
+        mode = self._temperature_mode(device)
+        if mode == "heat":
+            if "heat_temp_set" in device.attrs:
+                return {"heat_temp_set": temperature}
+            if "heating_temp" in device.attrs:
+                return {"heating_temp": temperature}
+        else:
+            if "cool_temp_set" in device.attrs:
+                return {"cool_temp_set": temperature}
+            if "cooling_temp" in device.attrs:
+                return {"cooling_temp": temperature}
+        if "temperature_current" in device.attrs:
+            return {"temperature_current": temperature}
+        if "temperature.current" in device.attrs:
+            return {"temperature.current": temperature}
+        return {"temperature": temperature, "small_temperature": 0}
+
+    def _regular_fan_control(self, device: AcDevice, fan: str) -> dict[str, Any]:
+        if "wind_speed_level" in device.attrs:
+            fan_modes = {"low": 1, "medium": 3, "high": 5, "auto": "auto", "silent": 1, "full": 5}
+            return {"wind_speed_level": fan_modes[fan]}
+        if "wind_speed.level" in device.attrs:
+            fan_modes = {"low": 1, "medium": 3, "high": 5, "auto": 6, "silent": 1, "full": 5}
+            return {"wind_speed.level": fan_modes[fan]}
+        fan_modes = {"silent": 20, "low": 40, "medium": 60, "high": 80, "full": 100, "auto": 102}
+        return {"wind_speed": fan_modes[fan]}
+
+    async def _verify_power_applied(self, device_id: str, expected_on: bool) -> bool:
+        for delay in (0.8, 1.6, 2.4):
+            await asyncio.sleep(delay)
+            await self.refresh_devices(log_refresh=False)
+            if self.devices[device_id].power_on is expected_on:
+                return True
+        return False
+
+    async def _verify_mode_applied(self, device_id: str, expected_mode: str) -> bool:
+        for delay in (0.8, 1.6, 2.4):
+            await asyncio.sleep(delay)
+            await self.refresh_devices(log_refresh=False)
+            actual_mode = self._reported_mode(self.devices[device_id])
+            if actual_mode == expected_mode:
+                return True
+        return False
+
+    def _reported_mode(self, device: AcDevice) -> str | None:
+        if device.device_type == 0x21 or device.is_central_node:
+            run_modes = {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}
+            mode = device.attrs.get("run_mode")
+            return run_modes.get(str(mode), str(mode)) if mode is not None else None
+        mode = _first_present(device.attrs, ("mode_current", "mode.current", "mode"))
+        return str(mode) if mode is not None else None
+
+    async def _verify_temperature_applied(self, device_id: str, expected_temperature: int, expected_mode: str | None = None) -> bool:
+        for delay in (0.8, 1.6, 2.4):
+            await asyncio.sleep(delay)
+            await self.refresh_devices(log_refresh=False)
+            device = self.devices[device_id]
+            actual_values = self._reported_temperature_values(device, expected_mode)
+            if any(_normalize_set_temperature(value) == expected_temperature for value in actual_values):
+                return True
+        return False
+
+    def _reported_temperature_values(self, device: AcDevice, expected_mode: str | None) -> list[float]:
+        if expected_mode == "heat":
+            keys = ("heat_temp_set", "heating_temp", "target_temperature", "temperature.target", "temperature.set", "temperature.current", "temperature_current", "temperature")
+        elif expected_mode:
+            keys = ("cool_temp_set", "cooling_temp", "target_temperature", "temperature.target", "temperature.set", "temperature.current", "temperature_current", "temperature")
+        else:
+            keys = (
+                "target_temperature",
+                "temperature.target",
+                "temperature.set",
+                "temperature.current",
+                "temperature_current",
+                "heat_temp_set",
+                "heating_temp",
+                "cool_temp_set",
+                "cooling_temp",
+                "temperature",
+            )
+        values = [_as_temperature(device.attrs.get(key)) for key in keys]
+        values = [value for value in values if value is not None]
+        if values:
+            return values
+        return [device.target_temperature]
+
+    async def _verify_fan_applied(self, device_id: str, expected_fan: str) -> bool:
+        for delay in (0.8, 1.6, 2.4):
+            await asyncio.sleep(delay)
+            await self.refresh_devices(log_refresh=False)
+            actual = self.devices[device_id].fan_speed
+            if actual == expected_fan:
+                return True
+        return False
+
 
 def run_async(coro):
     return asyncio.run(coro)
@@ -579,6 +735,12 @@ def _fan_label(fan: str) -> str:
         "full": "强风",
         "off": "关闭",
     }.get(fan, fan)
+
+
+def format_temperature(value: float | None) -> str:
+    if value is None:
+        return "未知"
+    return str(round(value))
 
 
 _DEVICE_ORDER_RE = re.compile(r"[（(]\s*(\d+)(?:\s*[-~－—至]\s*\d+)?\s*[)）]")

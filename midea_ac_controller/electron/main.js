@@ -1,5 +1,6 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage } = require("electron");
 const http = require("http");
+const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -7,6 +8,7 @@ let mainWindow;
 let backend;
 let tray;
 let isQuitting = false;
+let backendPort = 18765;
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.exit(0);
@@ -40,11 +42,13 @@ function createWindow() {
   });
   const packagedWeb = path.join(__dirname, "web", "index.html");
   const devWeb = path.join(__dirname, "..", "web", "index.html");
-  mainWindow.loadFile(app.isPackaged ? packagedWeb : devWeb);
+  mainWindow.loadFile(app.isPackaged ? packagedWeb : devWeb, {
+    query: { apiPort: String(backendPort) },
+  });
   mainWindow.on("close", (event) => {
     if (isQuitting) return;
     event.preventDefault();
-    mainWindow.minimize();
+    mainWindow.hide();
   });
 }
 
@@ -72,29 +76,56 @@ function createTray() {
   tray.on("click", showMainWindow);
 }
 
-function isBackendRunning() {
-  return new Promise((resolve) => {
-    const req = http.get("http://127.0.0.1:18765/api/health", (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+function getFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 18765;
+      server.close(() => resolve(port));
     });
-    req.setTimeout(800, () => {
-      req.destroy();
-      resolve(false);
-    });
-    req.on("error", () => resolve(false));
   });
 }
 
-function startBackend() {
+function waitForBackend(port) {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + 12000;
+    const check = () => {
+      const req = http.get(`http://127.0.0.1:${port}/api/health`, (res) => {
+        res.resume();
+        if (res.statusCode === 200) {
+          resolve(true);
+        } else if (Date.now() > deadline) {
+          resolve(false);
+        } else {
+          setTimeout(check, 300);
+        }
+      });
+      req.setTimeout(800, () => {
+        req.destroy();
+        if (Date.now() > deadline) resolve(false);
+        else setTimeout(check, 300);
+      });
+      req.on("error", () => {
+        if (Date.now() > deadline) resolve(false);
+        else setTimeout(check, 300);
+      });
+    };
+    check();
+  });
+}
+
+function startBackend(port) {
   if (app.isPackaged) {
     const exe = path.join(process.resourcesPath, "backend", "midea_backend.exe");
-    backend = spawn(exe, [], { stdio: "ignore", windowsHide: true });
+    backend = spawn(exe, ["--port", String(port)], { stdio: "ignore", windowsHide: true });
     return;
   }
   const projectRoot = path.resolve(__dirname, "..", "..");
   const python = process.platform === "win32" ? "python" : "python3";
-  backend = spawn(python, ["-m", "midea_ac_controller.server"], {
+  backend = spawn(python, ["-m", "midea_ac_controller.server", "--port", String(port)], {
     cwd: projectRoot,
     stdio: "inherit",
   });
@@ -102,9 +133,9 @@ function startBackend() {
 
 app.whenReady().then(async () => {
   if (!gotTheLock) return;
-  if (!(await isBackendRunning())) {
-    startBackend();
-  }
+  backendPort = await getFreePort();
+  startBackend(backendPort);
+  await waitForBackend(backendPort);
   createWindow();
   createTray();
 });
