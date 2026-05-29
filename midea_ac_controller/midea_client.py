@@ -373,6 +373,7 @@ class MideaAcClient:
             if on:
                 preferred_mode = self._active_preferred_mode(device)
                 if preferred_mode:
+                    self.log(f"{device.name}: 恢复模式 {_mode_label(preferred_mode)}")
                     await asyncio.sleep(0.5)
                     await self.set_mode(device_id, preferred_mode)
         else:
@@ -380,6 +381,7 @@ class MideaAcClient:
             if on:
                 preferred_mode = self._active_preferred_mode(device)
                 if preferred_mode:
+                    self.log(f"{device.name}: 恢复模式 {_mode_label(preferred_mode)}")
                     await asyncio.sleep(0.5)
                     await self.set_mode(device_id, preferred_mode)
         self.log(f"{device.name}: {'开机' if on else '关机'}")

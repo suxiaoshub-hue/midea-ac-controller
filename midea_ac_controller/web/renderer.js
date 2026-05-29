@@ -1,3 +1,5 @@
+const MODE_PREFS_KEY = "midea_ac_controller.preferred_modes";
+
 const state = {
   devices: [],
   loggedIn: false,
@@ -11,6 +13,7 @@ const state = {
   statePollBusy: false,
   refreshPollBusy: false,
   interactingUntil: 0,
+  preferredModes: loadPreferredModes(),
 };
 
 async function api(path, method = "GET", body) {
@@ -24,6 +27,27 @@ async function api(path, method = "GET", body) {
 
 function el(id) {
   return document.getElementById(id);
+}
+
+function loadPreferredModes() {
+  try {
+    const raw = localStorage.getItem(MODE_PREFS_KEY);
+    const data = raw ? JSON.parse(raw) : {};
+    return data && typeof data === "object" ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePreferredMode(deviceId, mode) {
+  if (!deviceId || !mode || mode === "off") return;
+  state.preferredModes[deviceId] = mode;
+  localStorage.setItem(MODE_PREFS_KEY, JSON.stringify(state.preferredModes));
+}
+
+function preferredModeFor(device) {
+  if (!device) return "";
+  return state.preferredModes[device.id] || device.preferred_mode || "";
 }
 
 function formatBuildTime(value) {
@@ -205,7 +229,9 @@ function renderDevices(devices = []) {
   state.deviceSignature = signature;
   root.innerHTML = "";
   for (const d of sortedDevices) {
-    const modeValue = d.current_mode || "cool";
+    const modeValue = d.power_on
+      ? (d.current_mode && d.current_mode !== "off" ? d.current_mode : preferredModeFor(d) || "cool")
+      : (preferredModeFor(d) || d.current_mode || "off");
     const fanValue = d.fan_speed || "auto";
     const onlineClass = d.online ? "online" : "offline";
     const visualPowerOn = pendingPowerValue(d.id, d.power_on);
@@ -366,9 +392,11 @@ document.addEventListener("click", async (event) => {
     const next = !device.power_on;
     state.busyDevices[deviceId] = next ? "开机中" : "关机中";
     if (next) {
+      const preferredMode = preferredModeFor(device) || device.current_mode || "cool";
       updateLocalDevice(deviceId, {
         power_on: true,
-        current_mode: device.current_mode === "off" ? (device.preferred_mode || "cool") : device.current_mode,
+        current_mode: preferredMode,
+        preferred_mode: preferredMode,
       });
     } else {
       setPendingDeviceState(deviceId, { power_on: false }, 5000);
@@ -399,6 +427,9 @@ document.addEventListener("change", async (event) => {
           ...(target.value !== "off" ? { preferred_mode: target.value } : {}),
         }
       : { fan_speed: target.value };
+  if (target.dataset.action === "mode" && target.value !== "off") {
+    savePreferredMode(target.dataset.id, target.value);
+  }
   updateLocalDevice(target.dataset.id, updates);
   await control(target.dataset.id, target.dataset.action, target.value);
 });
