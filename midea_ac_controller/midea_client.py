@@ -93,6 +93,7 @@ class AcDevice:
     nodeid: str | None = None
     modelid: str | None = None
     idtype: int | None = None
+    preferred_mode: str | None = None
     attrs: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -152,12 +153,10 @@ class AcDevice:
         if self.device_type == 0x21 or self.is_central_node:
             run_modes = {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}
             return run_modes.get(str(self.attrs.get("run_mode", "2")), str(self.attrs.get("run_mode", "2")))
-        mode = self.attrs.get("_preferred_mode") or self.attrs.get("mode") or self.attrs.get("mode.current")
+        mode = self.preferred_mode or self.attrs.get("mode") or self.attrs.get("mode.current")
         if isinstance(mode, str) and mode and mode != "off":
             return mode
-        if not self.power_on:
-            return "off"
-        return "cool"
+        return "cool" if self.power_on else "off"
 
     @property
     def fan_speed(self) -> str:
@@ -191,6 +190,7 @@ class AcDevice:
             "nodeid": self.nodeid,
             "modelid": self.modelid,
             "idtype": self.idtype,
+            "preferred_mode": self.preferred_mode,
             "power_on": self.power_on,
             "current_mode": self.current_mode,
             "fan_speed": self.fan_speed,
@@ -203,11 +203,13 @@ class AcDevice:
 class MideaAcClient:
     def __init__(self, data_dir: Path, log: Callable[[str], None] | None = None):
         self.data_dir = data_dir
+        self.device_prefs_file = data_dir / "device_prefs.json"
         self.log = log or (lambda message: None)
         self.session: ClientSession | None = None
         self.cloud: MeijuCloud | MSmartHomeCloud | None = None
         self.server = SERVER_MEIJU
         self.devices: dict[str, AcDevice] = {}
+        self.device_prefs: dict[str, dict[str, Any]] = self._load_device_prefs()
 
     async def close(self) -> None:
         if self.session is not None:
@@ -259,6 +261,7 @@ class MideaAcClient:
                     model_number=info.get("model_number"),
                     manufacturer_code=info.get("manufacturer_code") or "0000",
                     smart_product_id=info.get("smart_product_id"),
+                    preferred_mode=self._preferred_mode(str(code)),
                 )
                 all_devices[device.id] = device
         self.devices = all_devices
@@ -350,6 +353,7 @@ class MideaAcClient:
                     nodeid=str(nodeid or endpoint_id),
                     modelid=endpoint.get("modelid") or attr.get("modelid"),
                     idtype=_parse_optional_int(endpoint.get("idType") or attr.get("idType")),
+                    preferred_mode=self._preferred_mode(device_id),
                 )
                 self.devices[device_id] = node
             node.attrs.update(_flatten_status(event))
@@ -360,8 +364,18 @@ class MideaAcClient:
         device = self.devices[device_id]
         if device.device_type == 0x21 or device.is_central_node:
             await self._send_central_control(device, {"run_mode": "2" if on else "0"})
+            if on:
+                preferred_mode = self._active_preferred_mode(device)
+                if preferred_mode:
+                    await asyncio.sleep(0.5)
+                    await self.set_mode(device_id, preferred_mode)
         else:
             await self._send_regular_control(device, {"power": "on" if on else "off"})
+            if on:
+                preferred_mode = self._active_preferred_mode(device)
+                if preferred_mode:
+                    await asyncio.sleep(0.5)
+                    await self.set_mode(device_id, preferred_mode)
         self.log(f"{device.name}: {'开机' if on else '关机'}")
 
     async def set_temperature(self, device_id: str, temperature: float) -> None:
@@ -382,7 +396,7 @@ class MideaAcClient:
     async def set_mode(self, device_id: str, mode: str) -> None:
         device = self.devices[device_id]
         if mode != "off":
-            device.attrs["_preferred_mode"] = mode
+            self._remember_preferred_mode(device, mode)
         if device.device_type == 0x21 or device.is_central_node:
             run_modes = {"off": "0", "fan": "1", "cool": "2", "heat": "3", "auto": "4", "dry": "5"}
             await self._send_central_control(device, {"run_mode": run_modes[mode]})
@@ -460,6 +474,54 @@ class MideaAcClient:
 
     def device_list(self) -> list[AcDevice]:
         return sorted(self.devices.values(), key=_device_sort_key)
+
+    def _load_device_prefs(self) -> dict[str, dict[str, Any]]:
+        if not self.device_prefs_file.exists():
+            return {}
+        try:
+            raw = json.loads(self.device_prefs_file.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        prefs: dict[str, dict[str, Any]] = {}
+        for device_id, payload in raw.items():
+            preferred_mode: str | None = None
+            if isinstance(payload, dict):
+                preferred_mode = payload.get("preferred_mode")
+            elif isinstance(payload, str):
+                preferred_mode = payload
+            if isinstance(preferred_mode, str) and preferred_mode and preferred_mode != "off":
+                prefs[str(device_id)] = {"preferred_mode": preferred_mode}
+        return prefs
+
+    def _save_device_prefs(self) -> None:
+        try:
+            self.device_prefs_file.write_text(json.dumps(self.device_prefs, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self.log(f"保存设备偏好失败：{exc}")
+
+    def _preferred_mode(self, device_id: str) -> str | None:
+        payload = self.device_prefs.get(str(device_id)) or {}
+        preferred_mode = payload.get("preferred_mode")
+        if isinstance(preferred_mode, str) and preferred_mode and preferred_mode != "off":
+            return preferred_mode
+        return None
+
+    def _remember_preferred_mode(self, device: AcDevice, mode: str) -> None:
+        if not isinstance(mode, str) or not mode or mode == "off":
+            return
+        device.preferred_mode = mode
+        self.device_prefs[str(device.id)] = {"preferred_mode": mode}
+        self._save_device_prefs()
+
+    def _active_preferred_mode(self, device: AcDevice) -> str | None:
+        if isinstance(device.preferred_mode, str) and device.preferred_mode and device.preferred_mode != "off":
+            return device.preferred_mode
+        return self._preferred_mode(device.id)
+
+    def _central_run_mode(self, mode: str) -> str:
+        return {"cool": "2", "heat": "3", "auto": "4", "dry": "5", "fan": "1"}.get(mode, "2")
 
 
 def run_async(coro):

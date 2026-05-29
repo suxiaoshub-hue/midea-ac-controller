@@ -139,6 +139,7 @@ function deviceStateSignature(devices) {
       d.online,
       d.power_on,
       d.current_mode,
+      d.preferred_mode,
       d.fan_speed,
       d.current_temperature,
       d.target_temperature,
@@ -367,7 +368,7 @@ document.addEventListener("click", async (event) => {
     if (next) {
       updateLocalDevice(deviceId, {
         power_on: true,
-        current_mode: device.current_mode === "off" ? (device._preferred_mode || "cool") : device.current_mode,
+        current_mode: device.current_mode === "off" ? (device.preferred_mode || "cool") : device.current_mode,
       });
     } else {
       setPendingDeviceState(deviceId, { power_on: false }, 5000);
@@ -390,7 +391,14 @@ document.addEventListener("change", async (event) => {
   const target = event.target;
   if (!target.matches("select[data-action]")) return;
   holdDeviceRender(1800);
-  const updates = target.dataset.action === "mode" ? { current_mode: target.value, power_on: target.value !== "off" } : { fan_speed: target.value };
+  const updates =
+    target.dataset.action === "mode"
+      ? {
+          current_mode: target.value,
+          power_on: target.value !== "off",
+          ...(target.value !== "off" ? { preferred_mode: target.value } : {}),
+        }
+      : { fan_speed: target.value };
   updateLocalDevice(target.dataset.id, updates);
   await control(target.dataset.id, target.dataset.action, target.value);
 });

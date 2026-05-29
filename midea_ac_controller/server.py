@@ -121,7 +121,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raise ValueError("缺少设备 ID")
                 if action == "power":
                     if isinstance(value, dict):
-                        STATE.run(STATE.client.set_power(device_id, bool(value.get("on")), value.get("temperature")))
+                        STATE.run(STATE.client.set_power(device_id, bool(value.get("on"))))
                     else:
                         STATE.run(STATE.client.set_power(device_id, bool(value)))
                 elif action == "temperature":
