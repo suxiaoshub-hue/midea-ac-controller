@@ -143,6 +143,7 @@ function deviceStateSignature(devices) {
       d.current_temperature,
       d.target_temperature,
       state.busyDevices[d.id] || "",
+      pendingPowerValue(d.id, d.power_on),
     ]),
   );
 }
@@ -172,6 +173,15 @@ function clearPendingDeviceState(deviceId) {
   delete state.pendingChanges[deviceId];
 }
 
+function pendingPowerValue(deviceId, fallback) {
+  const pending = state.pendingChanges[deviceId];
+  if (!pending || pending.expiresAt <= Date.now()) return fallback;
+  if (Object.prototype.hasOwnProperty.call(pending.updates, "power_on")) {
+    return pending.updates.power_on;
+  }
+  return fallback;
+}
+
 function mergePendingDeviceState(devices = []) {
   const now = Date.now();
   return devices.map((device) => {
@@ -197,7 +207,8 @@ function renderDevices(devices = []) {
     const modeValue = d.current_mode || "cool";
     const fanValue = d.fan_speed || "auto";
     const onlineClass = d.online ? "online" : "offline";
-    const stateText = d.power_on ? "开" : "关";
+    const visualPowerOn = pendingPowerValue(d.id, d.power_on);
+    const stateText = visualPowerOn ? "开" : "关";
     const busyText = state.busyDevices[d.id];
     const card = document.createElement("article");
     card.className = "card";
@@ -213,7 +224,7 @@ function renderDevices(devices = []) {
       <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
-        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机" ${busyText ? "disabled" : ""}>
+        <button class="power-switch ${visualPowerOn ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机" ${busyText ? "disabled" : ""}>
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </button>
       </div>
@@ -237,7 +248,7 @@ function renderDevices(devices = []) {
         </label>
       </div>
       <div class="card-foot">
-        <span>${busyText || (d.power_on ? "运行中" : "已关闭")}</span>
+        <span>${busyText || (visualPowerOn ? "运行中" : "已关闭")}</span>
         <span>状态：${stateText} | 模式：${translateMode(modeValue)} | 风速：${translateFan(fanValue)}</span>
       </div>
     `;
@@ -359,6 +370,7 @@ document.addEventListener("click", async (event) => {
         current_mode: device.current_mode === "off" ? "cool" : device.current_mode,
       });
     } else {
+      setPendingDeviceState(deviceId, { power_on: false, current_mode: "off" }, 5000);
       state.deviceSignature = "";
       renderDevices(state.devices);
     }
