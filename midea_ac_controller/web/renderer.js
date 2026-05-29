@@ -367,10 +367,10 @@ document.addEventListener("click", async (event) => {
     if (next) {
       updateLocalDevice(deviceId, {
         power_on: true,
-        current_mode: device.current_mode === "off" ? "cool" : device.current_mode,
+        current_mode: device.current_mode === "off" ? (device._preferred_mode || "cool") : device.current_mode,
       });
     } else {
-      setPendingDeviceState(deviceId, { power_on: false, current_mode: "off" }, 5000);
+      setPendingDeviceState(deviceId, { power_on: false }, 5000);
       state.deviceSignature = "";
       renderDevices(state.devices);
     }

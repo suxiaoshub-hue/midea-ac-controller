@@ -152,8 +152,8 @@ class AcDevice:
         if self.device_type == 0x21 or self.is_central_node:
             run_modes = {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}
             return run_modes.get(str(self.attrs.get("run_mode", "2")), str(self.attrs.get("run_mode", "2")))
-        mode = self.attrs.get("mode")
-        if isinstance(mode, str) and mode:
+        mode = self.attrs.get("_preferred_mode") or self.attrs.get("mode") or self.attrs.get("mode.current")
+        if isinstance(mode, str) and mode and mode != "off":
             return mode
         if not self.power_on:
             return "off"
@@ -381,6 +381,8 @@ class MideaAcClient:
 
     async def set_mode(self, device_id: str, mode: str) -> None:
         device = self.devices[device_id]
+        if mode != "off":
+            device.attrs["_preferred_mode"] = mode
         if device.device_type == 0x21 or device.is_central_node:
             run_modes = {"off": "0", "fan": "1", "cool": "2", "heat": "3", "auto": "4", "dry": "5"}
             await self._send_central_control(device, {"run_mode": run_modes[mode]})
