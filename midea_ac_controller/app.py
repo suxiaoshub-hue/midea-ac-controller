@@ -231,8 +231,12 @@ class MideaAcApp:
 
     def _display_mode(self, device: AcDevice) -> str:
         if device.device_type == 0x21 or device.is_central_node:
-            return {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}.get(str(device.attrs.get("run_mode")), "cool")
-        return "off" if not device.power_on else str(device.attrs.get("mode") or device.attrs.get("mode.current") or "cool")
+            if not device.power_on:
+                return device.preferred_mode or "off"
+            return {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}.get(str(device.attrs.get("run_mode")), device.preferred_mode or "cool")
+        if not device.power_on:
+            return device.preferred_mode or "off"
+        return str(device.attrs.get("mode") or device.attrs.get("mode.current") or device.preferred_mode or "cool")
 
     def _toggle_power(self, device: AcDevice):
         self._run_task(self.client.set_power(device.id, not device.power_on), refresh_after=True)

@@ -152,11 +152,17 @@ class AcDevice:
     def current_mode(self) -> str:
         if self.device_type == 0x21 or self.is_central_node:
             run_modes = {"0": "off", "1": "fan", "2": "cool", "3": "heat", "4": "auto", "5": "dry"}
-            return run_modes.get(str(self.attrs.get("run_mode", "2")), str(self.attrs.get("run_mode", "2")))
-        mode = self.preferred_mode or self.attrs.get("mode") or self.attrs.get("mode.current")
+            if not self.power_on:
+                return self.preferred_mode or "off"
+            mode = self.attrs.get("run_mode", "2")
+            resolved = run_modes.get(str(mode), str(mode))
+            return resolved if resolved != "off" else (self.preferred_mode or "cool")
+        if not self.power_on:
+            return self.preferred_mode or "off"
+        mode = self.attrs.get("mode") or self.attrs.get("mode.current")
         if isinstance(mode, str) and mode and mode != "off":
             return mode
-        return "cool" if self.power_on else "off"
+        return self.preferred_mode or "cool"
 
     @property
     def fan_speed(self) -> str:
