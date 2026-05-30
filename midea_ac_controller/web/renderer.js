@@ -1,9 +1,12 @@
 const API_PORT = new URLSearchParams(window.location.search).get("apiPort") || "18765";
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const APP_TITLE = "白熊TT自用空调控制系统";
+const WKS_ON_ICON = "./assets/wks/wks-classic-online-256.png";
+const WKS_OFF_ICON = "./assets/wks/wks-classic-offline-256.png";
 
 const state = {
   devices: [],
+  wksGroups: {},
   loggedIn: false,
   deviceSignature: "",
   lastUpdatedAt: null,
@@ -35,6 +38,12 @@ function isKnownMode(mode) {
 
 function isKnownFan(fan) {
   return FAN_OPTIONS.some((item) => item.value === fan);
+}
+
+function mergeWksGroups(groups = {}) {
+  state.wksGroups = groups && typeof groups === "object" ? groups : {};
+  state.deviceSignature = "";
+  renderDevices(state.devices);
 }
 
 function formatBuildTime(value) {
@@ -171,6 +180,7 @@ function deviceStateSignature(devices) {
       d.fan_speed,
       d.current_temperature,
       d.target_temperature,
+      wksHostsFor(d).map((item) => `${item.ip}:${item.online ? 1 : 0}`).join(","),
       state.busyDevices[d.id] || "",
     ]),
   );
@@ -190,6 +200,31 @@ function sortDevices(devices) {
   });
 }
 
+function wksHostsFor(device) {
+  return state.wksGroups[device.name] || device.wks_hosts || [];
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function renderWksIcons(hosts = []) {
+  return hosts
+    .map((host) => {
+      const icon = host.online ? WKS_ON_ICON : WKS_OFF_ICON;
+      const stateLabel = host.online ? "在线" : "离线";
+      const label = host.label || host.ip || "";
+      const title = `${label} ${host.ip || ""} ${stateLabel}`;
+      return `<img class="wks-node ${host.online ? "online" : "offline"}" src="${icon}" alt="${escapeHtml(label)}" title="${escapeHtml(title)}" />`;
+    })
+    .join("");
+}
+
 function renderDevices(devices = []) {
   if (document.activeElement && document.activeElement.matches("select[data-action]")) return;
   if (Date.now() < state.interactingUntil) return;
@@ -207,6 +242,10 @@ function renderDevices(devices = []) {
     const onlineClass = d.online ? "online" : "offline";
     const stateText = d.power_on ? "开" : "关";
     const busyText = state.busyDevices[d.id];
+    const wksHosts = wksHostsFor(d);
+    const wksOnlineCount = wksHosts.filter((host) => host.online).length;
+    const wksHostCount = wksHosts.length;
+    const wksSummary = wksHostCount ? `${wksOnlineCount}/${wksHostCount} 在线` : "未配置 WKS";
     const card = document.createElement("article");
     card.className = "card";
     card.innerHTML = `
@@ -215,9 +254,13 @@ function renderDevices(devices = []) {
           <span class="device-dot ${onlineClass}"></span>
           <h3>${d.name}</h3>
         </div>
-        <button class="more-btn" type="button" aria-label="设备菜单">··</button>
+        <div class="card-tools">
+          ${wksHosts.length ? `<div class="wks-icons" aria-label="WKS电脑在线状态">${renderWksIcons(wksHosts)}</div>` : ""}
+          <button class="more-btn" type="button" aria-label="设备菜单">··</button>
+        </div>
       </div>
       <div class="device-meta">设备号：${d.id}</div>
+      <div class="device-meta wks-meta">WKS电脑：${wksSummary}${wksHosts.length ? ` · ${escapeHtml(wksHosts.map((item) => item.label || item.ip.split(".").pop()).join(" / "))}` : ""}</div>
       <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
@@ -265,6 +308,15 @@ async function refreshDevices(quiet = true) {
   state.devices = data.devices || [];
   renderStatus(data.state || {});
   renderDevices(state.devices);
+}
+
+async function refreshWks() {
+  try {
+    const data = await api("/api/wks");
+    mergeWksGroups(data.groups || {});
+  } catch {
+    // WKS icon status is optional; keep the last known state if polling fails.
+  }
 }
 
 async function login() {
@@ -405,5 +457,7 @@ el("btnRefresh").addEventListener("click", () => (state.loggedIn ? refreshDevice
 loadVersion();
 loadConfig();
 refreshAll();
+refreshWks();
 setInterval(pollState, 5000);
 setInterval(pollDevices, 30000);
+setInterval(refreshWks, 3000);

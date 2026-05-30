@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .midea_client import SERVER_MEIJU, MideaAcClient
+from .wks_monitor import WksMonitor
 
 
 APP_DIR = Path.home() / ".midea_ac_controller"
@@ -27,6 +28,7 @@ class ApiState:
         self.logs: list[str] = []
         self.client = MideaAcClient(APP_DIR, self.log)
         self.auto_login_attempted = False
+        self.wks = WksMonitor(APP_DIR, self.log)
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -81,6 +83,10 @@ class ApiState:
             self.run(self.client.close())
         except Exception:
             pass
+        try:
+            self.wks.close()
+        except Exception:
+            pass
         self.loop.call_soon_threadsafe(self.loop.stop)
 
 
@@ -101,6 +107,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
             elif path == "/api/config":
                 self._send_json(STATE.load_config())
+            elif path == "/api/wks":
+                self._send_json(STATE.wks.snapshot())
             elif path == "/api/state":
                 STATE.ensure_logged_in_from_config()
                 include_logs = "logs=0" not in parsed.query
@@ -195,6 +203,13 @@ class RequestHandler(BaseHTTPRequestHandler):
 
     def _snapshot(self, include_logs: bool = True):
         data = STATE.client.snapshot()
+        wks_snapshot = STATE.wks.snapshot()
+        wks_groups = wks_snapshot.get("groups") or {}
+        for device in data.get("devices") or []:
+            device["wks_hosts"] = wks_groups.get(device.get("name"), [])
+            device["wks_online_count"] = sum(1 for host in device["wks_hosts"] if host.get("online"))
+            device["wks_host_count"] = len(device["wks_hosts"])
+        data["wks"] = wks_snapshot
         if include_logs:
             data["logs"] = STATE.logs[-5:]
         return data
