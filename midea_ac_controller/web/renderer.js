@@ -40,6 +40,15 @@ function isKnownFan(fan) {
   return FAN_OPTIONS.some((item) => item.value === fan);
 }
 
+function normalizeWksName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[（）]/g, (ch) => (ch === "（" ? "(" : ")"))
+    .replace(/[－—–至]/g, "-")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
 function mergeWksGroups(groups = {}) {
   state.wksGroups = groups && typeof groups === "object" ? groups : {};
   state.deviceSignature = "";
@@ -201,7 +210,15 @@ function sortDevices(devices) {
 }
 
 function wksHostsFor(device) {
-  return state.wksGroups[device.name] || device.wks_hosts || [];
+  const exact = state.wksGroups[device.name];
+  if (Array.isArray(exact)) return exact;
+  const normalized = normalizeWksName(device.name);
+  for (const [name, hosts] of Object.entries(state.wksGroups || {})) {
+    if (normalizeWksName(name) === normalized && Array.isArray(hosts)) {
+      return hosts;
+    }
+  }
+  return device.wks_hosts || [];
 }
 
 function escapeHtml(value) {

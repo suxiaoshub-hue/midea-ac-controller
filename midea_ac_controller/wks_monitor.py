@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import platform
+import re
+import socket
 import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +14,60 @@ from typing import Any, Callable
 
 DEFAULT_INTERVAL_SECONDS = 3.0
 DEFAULT_TIMEOUT_MS = 800
+_NAME_SPACE_RE = re.compile(r"\s+")
+
+_WINDOWS_ICMP = None
+if platform.system().lower() == "windows":
+    from ctypes import wintypes
+
+    class _IP_OPTION_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("Ttl", wintypes.BYTE),
+            ("Tos", wintypes.BYTE),
+            ("Flags", wintypes.BYTE),
+            ("OptionsSize", wintypes.BYTE),
+            ("OptionsData", wintypes.LPVOID),
+        ]
+
+    class _ICMP_ECHO_REPLY(ctypes.Structure):
+        _fields_ = [
+            ("Address", wintypes.DWORD),
+            ("Status", wintypes.DWORD),
+            ("RoundTripTime", wintypes.DWORD),
+            ("DataSize", wintypes.WORD),
+            ("Reserved", wintypes.WORD),
+            ("Data", wintypes.LPVOID),
+            ("Options", _IP_OPTION_INFORMATION),
+        ]
+
+    _icmp = ctypes.WinDLL("iphlpapi")
+    _WINDOWS_ICMP = {
+        "create": _icmp.IcmpCreateFile,
+        "close": _icmp.IcmpCloseHandle,
+        "send": _icmp.IcmpSendEcho,
+        "reply": _ICMP_ECHO_REPLY,
+    }
+    _WINDOWS_ICMP["create"].restype = wintypes.HANDLE
+    _WINDOWS_ICMP["close"].argtypes = [wintypes.HANDLE]
+    _WINDOWS_ICMP["close"].restype = wintypes.BOOL
+    _WINDOWS_ICMP["send"].argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.WORD,
+        wintypes.LPVOID,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    _WINDOWS_ICMP["send"].restype = wintypes.DWORD
+
+
+def normalize_wks_group_name(value: Any) -> str:
+    text = str(value or "").strip()
+    text = text.replace("（", "(").replace("）", ")")
+    text = text.replace("－", "-").replace("—", "-").replace("–", "-").replace("至", "-")
+    return _NAME_SPACE_RE.sub("", text).lower()
 
 
 class WksMonitor:
@@ -64,7 +121,7 @@ class WksMonitor:
 
     def _load_config(self) -> dict[str, Any] | None:
         try:
-            raw = json.loads(self.config_file.read_text(encoding="utf-8"))
+            raw = json.loads(self.config_file.read_text(encoding="utf-8-sig"))
         except Exception as exc:
             self._log_error_once(f"WKS 配置读取失败：{exc}")
             return None
@@ -88,7 +145,7 @@ class WksMonitor:
             normalized_hosts = self._normalize_hosts(hosts)
             if not normalized_hosts:
                 continue
-            groups[group_name] = self._refresh_group(normalized_hosts, timeout_ms)
+            groups[group_name.strip()] = self._refresh_group(normalized_hosts, timeout_ms)
         with self._lock:
             self._groups = groups
             self._settings = {
@@ -138,11 +195,9 @@ class WksMonitor:
             return False
         system = platform.system().lower()
         if system == "windows":
-            cmd = ["ping", "-n", "1", "-w", str(timeout_ms), ip]
-            timeout = max(1.5, timeout_ms / 1000 + 1.0)
-        else:
-            cmd = ["ping", "-c", "1", ip]
-            timeout = max(1.5, timeout_ms / 1000 + 1.5)
+            return self._ping_host_windows(ip, timeout_ms)
+        cmd = ["ping", "-c", "1", ip]
+        timeout = max(1.5, timeout_ms / 1000 + 1.5)
         try:
             completed = subprocess.run(
                 cmd,
@@ -154,6 +209,39 @@ class WksMonitor:
             return completed.returncode == 0
         except (FileNotFoundError, subprocess.SubprocessError, OSError):
             return False
+
+    def _ping_host_windows(self, ip: str, timeout_ms: int) -> bool:
+        icmp = _WINDOWS_ICMP
+        if not icmp:
+            return False
+        handle = icmp["create"]()
+        if not handle or handle == ctypes.c_void_p(-1).value:
+            return False
+        try:
+            request_data = ctypes.create_string_buffer(b"midea_auto_cloud")
+            reply_buffer = ctypes.create_string_buffer(ctypes.sizeof(icmp["reply"]) + 64)
+            address = int.from_bytes(socket.inet_aton(ip), "little")
+            reply_count = icmp["send"](
+                handle,
+                address,
+                request_data,
+                len(request_data),
+                None,
+                reply_buffer,
+                len(reply_buffer),
+                int(timeout_ms),
+            )
+            if reply_count <= 0:
+                return False
+            reply = ctypes.cast(reply_buffer, ctypes.POINTER(icmp["reply"])).contents
+            return int(reply.Status) == 0
+        except Exception:
+            return False
+        finally:
+            try:
+                icmp["close"](handle)
+            except Exception:
+                pass
 
     def _label_from_ip(self, ip: str) -> str:
         tail = ip.rsplit(".", 1)[-1] if "." in ip else ip

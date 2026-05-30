@@ -161,7 +161,7 @@ button.primary {
 .card-head {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 12px;
 }
 .card-tools {
@@ -174,12 +174,17 @@ button.primary {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 .device-title h3 {
   margin: 0;
-  font-size: 20px;
-  line-height: 1.2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 18px;
+  line-height: 1.15;
 }
 .device-dot {
   width: 14px;

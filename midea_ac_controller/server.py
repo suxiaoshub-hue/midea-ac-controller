@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .midea_client import SERVER_MEIJU, MideaAcClient
-from .wks_monitor import WksMonitor
+from .wks_monitor import WksMonitor, normalize_wks_group_name
 
 
 APP_DIR = Path.home() / ".midea_ac_controller"
@@ -205,8 +205,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         data = STATE.client.snapshot()
         wks_snapshot = STATE.wks.snapshot()
         wks_groups = wks_snapshot.get("groups") or {}
+        normalized_wks_groups = {normalize_wks_group_name(name): hosts for name, hosts in wks_groups.items()}
         for device in data.get("devices") or []:
-            device["wks_hosts"] = wks_groups.get(device.get("name"), [])
+            device["wks_hosts"] = normalized_wks_groups.get(normalize_wks_group_name(device.get("name")), [])
             device["wks_online_count"] = sum(1 for host in device["wks_hosts"] if host.get("online"))
             device["wks_host_count"] = len(device["wks_hosts"])
         data["wks"] = wks_snapshot
