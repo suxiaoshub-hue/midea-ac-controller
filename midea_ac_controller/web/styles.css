@@ -162,13 +162,15 @@ button.primary {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 .card-tools {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   flex: 0 0 auto;
+  margin-left: auto;
+  transform: translateX(-4px);
 }
 .device-title {
   display: flex;
@@ -203,14 +205,14 @@ button.primary {
   box-shadow: 0 0 0 5px rgba(245, 158, 11, 0.18);
 }
 .more-btn {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border-radius: 999px;
   background: transparent;
   box-shadow: none;
   color: #64748b;
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1;
 }
 .device-meta {
@@ -224,12 +226,13 @@ button.primary {
 .wks-icons {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: nowrap;
+  transform: translateX(-2px);
 }
 .wks-node {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: 7px;
   object-fit: cover;
   box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
@@ -414,11 +417,12 @@ select option {
     align-items: flex-start;
   }
   .card-tools {
-    gap: 8px;
+    gap: 6px;
+    transform: translateX(-2px);
   }
   .wks-node {
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 22px;
   }
   .select-grid {
     grid-template-columns: 1fr;
