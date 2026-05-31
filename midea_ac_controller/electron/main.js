@@ -1,6 +1,5 @@
 const { app, BrowserWindow, Menu, Tray, nativeImage } = require("electron");
 const http = require("http");
-const net = require("net");
 const path = require("path");
 const { spawn } = require("child_process");
 
@@ -72,19 +71,6 @@ function createTray() {
   tray.on("click", showMainWindow);
 }
 
-function getFreePort() {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 18765;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
 function waitForBackend(port) {
   return new Promise((resolve) => {
     const deadline = Date.now() + 12000;
@@ -116,12 +102,12 @@ function waitForBackend(port) {
 function startBackend(port) {
   if (app.isPackaged) {
     const exe = path.join(process.resourcesPath, "backend", "midea_backend.exe");
-    backend = spawn(exe, ["--port", String(port)], { stdio: "ignore", windowsHide: true });
+    backend = spawn(exe, ["--host", "0.0.0.0", "--port", String(port)], { stdio: "ignore", windowsHide: true });
     return;
   }
   const projectRoot = path.resolve(__dirname, "..", "..");
   const python = process.platform === "win32" ? "python" : "python3";
-  backend = spawn(python, ["-m", "midea_ac_controller.server", "--port", String(port)], {
+  backend = spawn(python, ["-m", "midea_ac_controller.server", "--host", "0.0.0.0", "--port", String(port)], {
     cwd: projectRoot,
     stdio: "inherit",
   });
@@ -129,7 +115,6 @@ function startBackend(port) {
 
 app.whenReady().then(async () => {
   if (!gotTheLock) return;
-  backendPort = await getFreePort();
   startBackend(backendPort);
   await waitForBackend(backendPort);
   createWindow();
