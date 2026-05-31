@@ -6,6 +6,7 @@ const WKS_OFF_ICON = "./assets/wks/wks-classic-offline-256.png";
 
 const state = {
   devices: [],
+  serverDevices: [],
   wksGroups: {},
   loggedIn: false,
   deviceSignature: "",
@@ -13,7 +14,8 @@ const state = {
   logsSignature: "",
   loginPanelOpen: false,
   verifyTimer: null,
-  busyDevices: {},
+  activeCommand: null,
+  commandQueue: [],
   statePollBusy: false,
   refreshPollBusy: false,
   interactingUntil: 0,
@@ -38,6 +40,15 @@ function isKnownMode(mode) {
 
 function isKnownFan(fan) {
   return FAN_OPTIONS.some((item) => item.value === fan);
+}
+
+function commandSignature(command) {
+  if (!command) return "";
+  return `${command.deviceId}:${command.action}:${JSON.stringify(command.value)}`;
+}
+
+function commandQueueSignature() {
+  return [state.activeCommand, ...state.commandQueue].map(commandSignature).join("|");
 }
 
 function normalizeWksName(value) {
@@ -105,7 +116,11 @@ function appendLocalLog(line) {
 function renderStatus(data) {
   state.loggedIn = Boolean(data.logged_in);
   state.lastUpdatedAt = new Date();
-  el("statusBar").textContent = state.loggedIn ? `已登录，设备 ${data.device_count} 台` : "未登录";
+  const queueCount = (state.activeCommand ? 1 : 0) + state.commandQueue.length;
+  const deviceCount = data.device_count ?? state.serverDevices.length;
+  el("statusBar").textContent = state.loggedIn
+    ? `已登录，设备 ${deviceCount} 台${queueCount ? ` · 指令排队 ${queueCount} 条` : ""}`
+    : "未登录";
   el("syncBar").textContent = state.lastUpdatedAt ? `最后更新 ${state.lastUpdatedAt.toLocaleTimeString()}` : "等待同步";
   updateLoginPanel();
   if (data.logs && data.logs.length) renderLogs(data.logs || []);
@@ -190,7 +205,7 @@ function deviceStateSignature(devices) {
       d.current_temperature,
       d.target_temperature,
       wksHostsFor(d).map((item) => `${item.ip}:${item.online ? 1 : 0}`).join(","),
-      state.busyDevices[d.id] || "",
+      commandQueueSignature(),
     ]),
   );
 }
@@ -219,6 +234,75 @@ function wksHostsFor(device) {
     }
   }
   return device.wks_hosts || [];
+}
+
+function cloneDevices(devices = []) {
+  return devices.map((device) => ({ ...device }));
+}
+
+function describeCommand(action, value) {
+  if (action === "power") {
+    const on = typeof value === "object" ? Boolean(value?.on) : Boolean(value);
+    return on ? "开机" : "关机";
+  }
+  if (action === "temperature") return `温度 ${formatTemp(value)}°`;
+  if (action === "mode") return `模式 ${translateMode(String(value))}`;
+  if (action === "fan") return `风速 ${translateFan(String(value))}`;
+  return action;
+}
+
+function getDeviceById(deviceId) {
+  return state.devices.find((item) => item.id === deviceId) || state.serverDevices.find((item) => item.id === deviceId) || null;
+}
+
+function applyCommandToDevice(device, command) {
+  if (!device || !command) return;
+  if (command.action === "power") {
+    const next = typeof command.value === "object" ? Boolean(command.value?.on) : Boolean(command.value);
+    device.power_on = next;
+    if (next && (!isKnownMode(device.current_mode) || device.current_mode === "off")) {
+      const preferred = device.preferred_mode;
+      if (isKnownMode(preferred) && preferred !== "off") {
+        device.current_mode = preferred;
+      }
+    }
+  } else if (command.action === "temperature") {
+    const temp = Number(command.value);
+    if (Number.isFinite(temp)) {
+      device.target_temperature = temp;
+    }
+  } else if (command.action === "mode") {
+    const mode = String(command.value);
+    device.preferred_mode = mode;
+    device.current_mode = mode;
+  } else if (command.action === "fan") {
+    device.fan_speed = String(command.value);
+  }
+}
+
+function buildVisibleDevices(baseDevices = state.serverDevices) {
+  const visible = sortDevices(cloneDevices(baseDevices));
+  const commands = [state.activeCommand, ...state.commandQueue].filter(Boolean);
+  for (const command of commands) {
+    const device = visible.find((item) => item.id === command.deviceId);
+    if (device) applyCommandToDevice(device, command);
+  }
+  return visible;
+}
+
+function syncVisibleDevices() {
+  state.devices = buildVisibleDevices();
+  state.deviceSignature = "";
+  renderDevices(state.devices);
+}
+
+function queueStatusFor(deviceId) {
+  if (state.activeCommand && state.activeCommand.deviceId === deviceId) {
+    return "执行中";
+  }
+  const pendingCount = state.commandQueue.filter((command) => command.deviceId === deviceId).length;
+  if (pendingCount <= 0) return "";
+  return pendingCount > 1 ? `排队中 ×${pendingCount}` : "排队中";
 }
 
 function escapeHtml(value) {
@@ -258,7 +342,7 @@ function renderDevices(devices = []) {
     const fanValue = isKnownFan(reportedFan) ? reportedFan : "auto";
     const onlineClass = d.online ? "online" : "offline";
     const stateText = d.power_on ? "开" : "关";
-    const busyText = state.busyDevices[d.id];
+    const busyText = queueStatusFor(d.id);
     const wksHosts = wksHostsFor(d);
     const wksOnlineCount = wksHosts.filter((host) => host.online).length;
     const wksHostCount = wksHosts.length;
@@ -281,25 +365,25 @@ function renderDevices(devices = []) {
       <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
-        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机" ${busyText ? "disabled" : ""}>
+        <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机">
           <span class="switch-track"><span class="switch-thumb"></span></span>
         </button>
       </div>
       <div class="temp-row">
-        <button class="temp-btn" data-action="temp-down" data-id="${d.id}" aria-label="降低温度" ${busyText ? "disabled" : ""}>−</button>
+        <button class="temp-btn" data-action="temp-down" data-id="${d.id}" aria-label="降低温度">−</button>
         <div class="temp-value">${formatTemp(d.target_temperature ?? 26)}°</div>
-        <button class="temp-btn" data-action="temp-up" data-id="${d.id}" aria-label="升高温度" ${busyText ? "disabled" : ""}>+</button>
+        <button class="temp-btn" data-action="temp-up" data-id="${d.id}" aria-label="升高温度">+</button>
       </div>
       <div class="select-grid">
         <label>
           <span>模式</span>
-          <select data-action="mode" data-id="${d.id}" ${busyText ? "disabled" : ""}>
+          <select data-action="mode" data-id="${d.id}">
             ${buildOptions(MODE_OPTIONS, modeValue)}
           </select>
         </label>
         <label>
           <span>风速</span>
-          <select data-action="fan" data-id="${d.id}" ${busyText ? "disabled" : ""}>
+          <select data-action="fan" data-id="${d.id}">
             ${buildOptions(FAN_OPTIONS, fanValue)}
           </select>
         </label>
@@ -315,14 +399,17 @@ function renderDevices(devices = []) {
 
 async function refreshAll() {
   const data = await api("/api/state");
-  state.devices = data.devices || [];
+  state.serverDevices = data.devices || [];
+  state.devices = buildVisibleDevices();
   renderStatus(data);
   renderDevices(state.devices);
 }
 
-async function refreshDevices(quiet = true) {
+async function refreshDevices(quiet = true, force = false) {
+  if (!force && (state.commandQueue.length || state.activeCommand)) return;
   const data = await api("/api/refresh", "POST", { quiet });
-  state.devices = data.devices || [];
+  state.serverDevices = data.devices || [];
+  state.devices = buildVisibleDevices();
   renderStatus(data.state || {});
   renderDevices(state.devices);
 }
@@ -344,7 +431,8 @@ async function login() {
     proxy: el("proxy").value,
   };
   const data = await api("/api/login", "POST", payload);
-  state.devices = data.devices || [];
+  state.serverDevices = data.devices || [];
+  state.devices = buildVisibleDevices();
   state.deviceSignature = "";
   state.loginPanelOpen = false;
   renderStatus(data.state || {});
@@ -352,30 +440,57 @@ async function login() {
 }
 
 async function control(deviceId, action, value) {
-  try {
-    const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
-    if (data.ok === false) {
-      throw new Error(data.error || "控制失败");
+  const data = await api("/api/control", "POST", { device_id: deviceId, action, value });
+  if (data.ok === false) {
+    throw new Error(data.error || "控制失败");
+  }
+  return data;
+}
+
+function queueControl(deviceId, action, value) {
+  const command = {
+    deviceId,
+    action,
+    value,
+    label: describeCommand(action, value),
+  };
+  state.commandQueue.push(command);
+  const device = getDeviceById(deviceId);
+  appendLocalLog(`下发指令：${device ? device.name : deviceId} · ${command.label}`);
+  syncVisibleDevices();
+  processCommandQueue().catch((error) => {
+    appendLocalLog(`队列异常：${error.message || error}`);
+  });
+}
+
+async function processCommandQueue() {
+  if (state.activeCommand) return;
+  while (state.commandQueue.length) {
+    state.activeCommand = state.commandQueue.shift();
+    syncVisibleDevices();
+    const command = state.activeCommand;
+    try {
+      const data = await control(command.deviceId, command.action, command.value);
+      if (data.devices) {
+        state.serverDevices = data.devices || [];
+      }
+      if (data.state) {
+        renderStatus(data.state);
+        if (Array.isArray(data.state.logs)) {
+          renderLogs(data.state.logs);
+        }
+      }
+      appendLocalLog(`执行完成：${command.label}`);
+      if (command.action !== "power") {
+        scheduleVerifyRefresh();
+      }
+    } catch (error) {
+      appendLocalLog(`控制失败：${command.label} · ${error.message || error}`);
+      await refreshDevices(true, true).catch(() => {});
+    } finally {
+      state.activeCommand = null;
+      syncVisibleDevices();
     }
-    state.devices = data.devices || [];
-    state.deviceSignature = "";
-    renderStatus(data.state || {});
-    renderDevices(state.devices);
-    if (data.state && Array.isArray(data.state.logs)) {
-      renderLogs(data.state.logs);
-    }
-    if (action === "power") {
-      await refreshDevices(true);
-    } else {
-      scheduleVerifyRefresh();
-    }
-  } catch (error) {
-    appendLocalLog(`控制失败：${error.message || error}`);
-    await refreshDevices(true).catch(() => {});
-  } finally {
-    delete state.busyDevices[deviceId];
-    state.deviceSignature = "";
-    renderDevices(state.devices);
   }
 }
 
@@ -393,12 +508,14 @@ function holdDeviceRender(durationMs = 1200) {
 
 async function pollState() {
   if (Date.now() < state.interactingUntil) return;
+  if (state.commandQueue.length || state.activeCommand) return;
   if (state.statePollBusy) return;
   state.statePollBusy = true;
   try {
     const data = await api("/api/state?logs=0");
     renderStatus(data);
-    state.devices = data.devices || [];
+    state.serverDevices = data.devices || [];
+    state.devices = buildVisibleDevices();
     renderDevices(state.devices);
   } finally {
     state.statePollBusy = false;
@@ -407,6 +524,7 @@ async function pollState() {
 
 async function pollDevices() {
   if (Date.now() < state.interactingUntil) return;
+  if (state.commandQueue.length || state.activeCommand) return;
   if (!state.loggedIn || state.refreshPollBusy) return;
   state.refreshPollBusy = true;
   try {
@@ -425,22 +543,13 @@ document.addEventListener("click", async (event) => {
   if (!device) return;
   if (action === "power") {
     const next = !device.power_on;
-    state.busyDevices[deviceId] = next ? "开机中" : "关机中";
-    state.deviceSignature = "";
-    renderDevices(state.devices);
-    await control(deviceId, "power", next);
+    queueControl(deviceId, "power", next);
   } else if (action === "temp-down") {
     const nextTemp = tempStep(device.target_temperature || 26) - 1;
-    state.busyDevices[deviceId] = "设置温度中";
-    state.deviceSignature = "";
-    renderDevices(state.devices);
-    await control(deviceId, "temperature", nextTemp);
+    queueControl(deviceId, "temperature", nextTemp);
   } else if (action === "temp-up") {
     const nextTemp = tempStep(device.target_temperature || 26) + 1;
-    state.busyDevices[deviceId] = "设置温度中";
-    state.deviceSignature = "";
-    renderDevices(state.devices);
-    await control(deviceId, "temperature", nextTemp);
+    queueControl(deviceId, "temperature", nextTemp);
   }
 });
 
@@ -448,10 +557,7 @@ document.addEventListener("change", async (event) => {
   const target = event.target;
   if (!target.matches("select[data-action]")) return;
   holdDeviceRender(200);
-  state.busyDevices[target.dataset.id] = target.dataset.action === "mode" ? "设置模式中" : "设置风速中";
-  state.deviceSignature = "";
-  setTimeout(() => renderDevices(state.devices), 250);
-  await control(target.dataset.id, target.dataset.action, target.value);
+  queueControl(target.dataset.id, target.dataset.action, target.value);
 });
 
 document.addEventListener("pointerdown", (event) => {
