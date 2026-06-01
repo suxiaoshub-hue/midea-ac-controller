@@ -197,9 +197,13 @@ class ApiState:
             since = offline_since.get(device.id)
             offline_seconds = max(0, int(now - since)) if since is not None else 0
             room_config = self._auto_power_room_config(config, device.id)
+            desired = self.client.desired_settings(device.id)
             rooms[device.id] = {
                 "mode": room_config["mode"],
                 "offline_delay_minutes": room_config["offline_delay_minutes"],
+                "desired_mode": desired["mode"],
+                "desired_temperature": desired["temperature"],
+                "desired_fan": desired["fan"],
                 "host_count": len(hosts),
                 "online_count": online_count,
                 "offline_seconds": offline_seconds,
@@ -257,7 +261,12 @@ class ApiState:
                 if not self.client.devices[device.id].power_on:
                     with self.control_lock:
                         self.run(self.client.set_power(device.id, True))
-                    self.log(f"自动开关空调：{device.name} 检测到客户机在线，自动开机")
+                        desired = self.client.desired_settings(device.id)
+                        self.run(self.client.apply_desired_settings(device.id))
+                    self.log(
+                        f"自动开关空调：{device.name} 检测到客户机在线，自动开机并应用设定 "
+                        f"{desired['temperature']}° / {desired['mode']} / {desired['fan']}"
+                    )
                 continue
             with self.auto_power_lock:
                 offline_since = self.auto_power_offline_since.setdefault(device.id, now)

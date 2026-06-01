@@ -215,6 +215,8 @@ class AcDevice:
             "modelid": self.modelid,
             "idtype": self.idtype,
             "preferred_mode": self.preferred_mode,
+            "preferred_temperature": self.attrs.get("_preferred_temperature"),
+            "preferred_fan": self.attrs.get("_preferred_fan"),
             "power_on": self.power_on,
             "current_mode": self.current_mode,
             "fan_speed": self.fan_speed,
@@ -426,6 +428,7 @@ class MideaAcClient:
             if not applied:
                 actual = format_temperature(self.devices[device_id].target_temperature)
                 raise RuntimeError(f"{device.name}: 温度未生效，设备目标温度仍为 {actual}°")
+            self._remember_preferred_temperature(self.devices[device_id], temperature)
             self.log(f"{device.name}: 设置温度 {temperature:g}°")
             return
         mode = self._temperature_mode(device)
@@ -435,6 +438,7 @@ class MideaAcClient:
         if not applied:
             actual = format_temperature(self.devices[device_id].target_temperature)
             raise RuntimeError(f"{device.name}: 温度未生效，设备目标温度仍为 {actual}°")
+        self._remember_preferred_temperature(self.devices[device_id], temperature)
         self.log(f"{device.name}: 设置温度 {temperature:g}°")
 
     async def set_mode(self, device_id: str, mode: str) -> None:
@@ -469,6 +473,7 @@ class MideaAcClient:
         if not applied:
             actual = self.devices[device_id].fan_speed
             raise RuntimeError(f"{device.name}: 风速未生效，设备仍为 {_fan_label(actual)}")
+        self._remember_preferred_fan(self.devices[device_id], fan)
         self.log(f"{device.name}: 设置风速 {_fan_label(fan)}")
 
     async def _send_regular_control(self, device: AcDevice, control: dict[str, Any]) -> None:
@@ -542,6 +547,13 @@ class MideaAcClient:
                 preferred_mode = payload
             if isinstance(preferred_mode, str) and preferred_mode and preferred_mode != "off":
                 prefs[str(device_id)] = {"preferred_mode": preferred_mode}
+            if isinstance(payload, dict):
+                preferred_temperature = _as_temperature(payload.get("preferred_temperature"))
+                preferred_fan = payload.get("preferred_fan")
+                if preferred_temperature is not None:
+                    prefs.setdefault(str(device_id), {})["preferred_temperature"] = int(round(preferred_temperature))
+                if isinstance(preferred_fan, str) and preferred_fan:
+                    prefs.setdefault(str(device_id), {})["preferred_fan"] = preferred_fan
         return prefs
 
     def _save_device_prefs(self) -> None:
@@ -557,17 +569,79 @@ class MideaAcClient:
             return preferred_mode
         return None
 
+    def _preferred_temperature(self, device_id: str) -> int | None:
+        payload = self.device_prefs.get(str(device_id)) or {}
+        preferred_temperature = _as_temperature(payload.get("preferred_temperature"))
+        if preferred_temperature is None:
+            return None
+        return _normalize_set_temperature(preferred_temperature)
+
+    def _preferred_fan(self, device_id: str) -> str | None:
+        payload = self.device_prefs.get(str(device_id)) or {}
+        preferred_fan = payload.get("preferred_fan")
+        if isinstance(preferred_fan, str) and preferred_fan:
+            return preferred_fan
+        return None
+
     def _remember_preferred_mode(self, device: AcDevice, mode: str) -> None:
         if not isinstance(mode, str) or not mode or mode == "off":
             return
         device.preferred_mode = mode
-        self.device_prefs[str(device.id)] = {"preferred_mode": mode}
+        prefs = self.device_prefs.setdefault(str(device.id), {})
+        prefs["preferred_mode"] = mode
+        device.attrs["_preferred_mode"] = mode
+        self._save_device_prefs()
+
+    def _remember_preferred_temperature(self, device: AcDevice, temperature: int) -> None:
+        temperature = _normalize_set_temperature(temperature)
+        prefs = self.device_prefs.setdefault(str(device.id), {})
+        prefs["preferred_temperature"] = temperature
+        device.attrs["_preferred_temperature"] = temperature
+        device.attrs["_local_target_temperature"] = temperature
+        self._save_device_prefs()
+
+    def _remember_preferred_fan(self, device: AcDevice, fan: str) -> None:
+        if not isinstance(fan, str) or not fan:
+            return
+        prefs = self.device_prefs.setdefault(str(device.id), {})
+        prefs["preferred_fan"] = fan
+        device.attrs["_preferred_fan"] = fan
         self._save_device_prefs()
 
     def _active_preferred_mode(self, device: AcDevice) -> str | None:
         if isinstance(device.preferred_mode, str) and device.preferred_mode and device.preferred_mode != "off":
             return device.preferred_mode
         return self._preferred_mode(device.id)
+
+    def desired_settings(self, device_id: str) -> dict[str, Any]:
+        device = self.devices[device_id]
+        mode = self._active_preferred_mode(device)
+        if not mode:
+            mode = device.current_mode if device.current_mode != "off" else self._reported_mode(device)
+        if not mode or mode == "off":
+            mode = "cool"
+        temperature = self._preferred_temperature(device_id)
+        if temperature is None:
+            temperature = _normalize_set_temperature(device.target_temperature)
+        fan = self._preferred_fan(device_id) or device.fan_speed or "auto"
+        return {
+            "mode": mode,
+            "temperature": temperature,
+            "fan": fan,
+        }
+
+    async def apply_desired_settings(self, device_id: str) -> None:
+        device = self.devices[device_id]
+        desired = self.desired_settings(device_id)
+        mode = str(desired["mode"])
+        temperature = int(desired["temperature"])
+        fan = str(desired["fan"])
+        if mode and mode != "off" and self._reported_mode(device) != mode:
+            await self.set_mode(device_id, mode)
+        if temperature:
+            await self.set_temperature(device_id, temperature)
+        if fan and fan != "off":
+            await self.set_fan(device_id, fan)
 
     def _central_run_mode(self, mode: str) -> str:
         return {"cool": "2", "heat": "3", "auto": "4", "dry": "5", "fan": "1"}.get(mode, "2")

@@ -167,6 +167,12 @@ function autoPowerLabel(device) {
   return `自动开关：离线 ${elapsed}/${delay} 分钟`;
 }
 
+function autoPowerDetail(device) {
+  const room = autoPowerConfigFor(device.id);
+  if (room.mode !== "auto") return "自动设定：手动";
+  return `自动设定：${formatTemp(room.desired_temperature)}° / ${translateMode(room.desired_mode)} / ${translateFan(room.desired_fan)}`;
+}
+
 function updateLoginPanel() {
   const panel = document.querySelector(".login-panel");
   const loginButton = el("btnLogin");
@@ -446,6 +452,7 @@ function renderDevices(devices = []) {
       <div class="card-foot">
         <span>${busyText || (d.power_on ? "运行中" : "已关闭")}</span>
         <span>${autoPowerLabel(d)}</span>
+        <span>${autoPowerDetail(d)}</span>
         <span>状态：${stateText} | 模式：${translateMode(modeValue)} | 风速：${translateFan(fanValue)}</span>
       </div>
     `;
