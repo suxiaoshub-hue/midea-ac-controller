@@ -154,6 +154,9 @@ function autoPowerConfigFor(deviceId) {
     online_count: Number(room.online_count || 0),
     offline_seconds: Number(room.offline_seconds || 0),
     offline_delay_seconds: Number(room.offline_delay_seconds || (room.offline_delay_minutes || state.autoPowerDefault.offline_delay_minutes || 10) * 60),
+    desired_mode: room.desired_mode || "cool",
+    desired_temperature: Number(room.desired_temperature || 26),
+    desired_fan: room.desired_fan || "auto",
   };
 }
 
