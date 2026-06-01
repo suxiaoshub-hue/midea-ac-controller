@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,9 +21,12 @@ from .client_page import build_client_page
 
 APP_DIR = Path.home() / ".midea_ac_controller"
 CONFIG_FILE = APP_DIR / "config.json"
+AUTO_POWER_FILE = APP_DIR / "auto_power.json"
 CLIENT_SUBNET = ipaddress.ip_network("192.168.88.0/24")
 CLIENT_MIN_TEMPERATURE = 23
 CLIENT_MAX_TEMPERATURE = 28
+AUTO_POWER_DEFAULT_DELAY_MINUTES = 10
+AUTO_POWER_CHECK_INTERVAL_SECONDS = 5
 ROOM_RANGE_RE = re.compile(r"[（(]\s*(\d+)(?:\s*[-~－—–至]\s*(\d+))?\s*[)）]")
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
@@ -38,6 +42,13 @@ class ApiState:
         self.auto_login_attempted = False
         self.wks = WksMonitor(APP_DIR, self.log)
         self.control_lock = threading.Lock()
+        self.auto_power_lock = threading.Lock()
+        self.auto_power_stop = threading.Event()
+        self.auto_power_offline_since: dict[str, float] = {}
+        self.auto_power_last_error = ""
+        self.auto_power_last_refresh = 0.0
+        self.auto_power_thread = threading.Thread(target=self._run_auto_power_loop, daemon=True)
+        self.auto_power_thread.start()
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -69,6 +80,41 @@ class ApiState:
         }
         CONFIG_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def load_auto_power_config(self) -> dict[str, Any]:
+        if not AUTO_POWER_FILE.exists():
+            config = self._normalize_auto_power_config({})
+            AUTO_POWER_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+            return config
+        try:
+            raw = json.loads(AUTO_POWER_FILE.read_text(encoding="utf-8-sig"))
+        except Exception:
+            raw = {}
+        return self._normalize_auto_power_config(raw if isinstance(raw, dict) else {})
+
+    def save_auto_power_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        config = self._normalize_auto_power_config(payload)
+        AUTO_POWER_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.log(f"自动开关空调：已切换为{'自动' if config['mode'] == 'auto' else '手动'}模式，离线关机缓冲 {config['offline_delay_minutes']} 分钟")
+        if config["mode"] == "manual":
+            with self.auto_power_lock:
+                self.auto_power_offline_since.clear()
+        return config
+
+    def _normalize_auto_power_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        mode = str(payload.get("mode") or "manual").strip().lower()
+        if mode not in {"manual", "auto"}:
+            mode = "manual"
+        try:
+            offline_delay_minutes = int(round(float(payload.get("offline_delay_minutes", AUTO_POWER_DEFAULT_DELAY_MINUTES))))
+        except (TypeError, ValueError):
+            offline_delay_minutes = AUTO_POWER_DEFAULT_DELAY_MINUTES
+        offline_delay_minutes = max(1, min(180, offline_delay_minutes))
+        return {
+            "mode": mode,
+            "offline_delay_minutes": offline_delay_minutes,
+            "check_interval_seconds": AUTO_POWER_CHECK_INTERVAL_SECONDS,
+        }
+
     def ensure_logged_in_from_config(self) -> None:
         if self.client.cloud is not None or self.auto_login_attempted:
             return
@@ -87,7 +133,91 @@ class ApiState:
             return
         self.run(self.client.load_devices())
 
+    def auto_power_snapshot(self) -> dict[str, Any]:
+        config = self.load_auto_power_config()
+        now = time.monotonic()
+        rooms: dict[str, dict[str, Any]] = {}
+        wks_groups = self._normalized_wks_groups()
+        with self.auto_power_lock:
+            offline_since = dict(self.auto_power_offline_since)
+        for device in self.client.device_list():
+            hosts = wks_groups.get(normalize_wks_group_name(device.name), [])
+            online_count = sum(1 for host in hosts if host.get("online"))
+            since = offline_since.get(device.id)
+            offline_seconds = max(0, int(now - since)) if since is not None else 0
+            rooms[device.id] = {
+                "host_count": len(hosts),
+                "online_count": online_count,
+                "offline_seconds": offline_seconds,
+                "offline_delay_seconds": config["offline_delay_minutes"] * 60,
+            }
+        return {
+            "config": config,
+            "rooms": rooms,
+            "config_path": str(AUTO_POWER_FILE),
+        }
+
+    def _run_auto_power_loop(self) -> None:
+        while not self.auto_power_stop.is_set():
+            try:
+                self._auto_power_tick()
+                self.auto_power_last_error = ""
+            except Exception as exc:
+                self._log_auto_power_error_once(f"自动开关空调检查失败：{exc}")
+            self.auto_power_stop.wait(AUTO_POWER_CHECK_INTERVAL_SECONDS)
+
+    def _auto_power_tick(self) -> None:
+        config = self.load_auto_power_config()
+        if config["mode"] != "auto":
+            return
+        self.ensure_logged_in_from_config()
+        if self.client.cloud is None or not self.client.devices:
+            return
+        now = time.monotonic()
+        if now - self.auto_power_last_refresh >= 30:
+            with self.control_lock:
+                self.run(self.client.refresh_devices(log_refresh=False))
+            self.auto_power_last_refresh = now
+        offline_delay_seconds = config["offline_delay_minutes"] * 60
+        wks_groups = self._normalized_wks_groups()
+        for device in self.client.device_list():
+            hosts = wks_groups.get(normalize_wks_group_name(device.name), [])
+            if not hosts or not device.online:
+                with self.auto_power_lock:
+                    self.auto_power_offline_since.pop(device.id, None)
+                continue
+            online_count = sum(1 for host in hosts if host.get("online"))
+            if online_count > 0:
+                with self.auto_power_lock:
+                    self.auto_power_offline_since.pop(device.id, None)
+                if not self.client.devices[device.id].power_on:
+                    with self.control_lock:
+                        self.run(self.client.set_power(device.id, True))
+                    self.log(f"自动开关空调：{device.name} 检测到客户机在线，自动开机")
+                continue
+            with self.auto_power_lock:
+                offline_since = self.auto_power_offline_since.setdefault(device.id, now)
+            if now - offline_since < offline_delay_seconds:
+                continue
+            if self.client.devices[device.id].power_on:
+                with self.control_lock:
+                    self.run(self.client.set_power(device.id, False))
+                self.log(f"自动开关空调：{device.name} 客户机离线超过 {config['offline_delay_minutes']} 分钟，自动关机")
+
+    def _normalized_wks_groups(self) -> dict[str, list[dict[str, Any]]]:
+        wks_snapshot = self.wks.snapshot()
+        groups = wks_snapshot.get("groups") or {}
+        return {normalize_wks_group_name(name): hosts for name, hosts in groups.items() if isinstance(hosts, list)}
+
+    def _log_auto_power_error_once(self, message: str) -> None:
+        if message == self.auto_power_last_error:
+            return
+        self.auto_power_last_error = message
+        self.log(message)
+
     def close(self):
+        self.auto_power_stop.set()
+        self.auto_power_thread.join(timeout=2)
         try:
             self.run(self.client.close())
         except Exception:
@@ -123,6 +253,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             elif path == "/api/wks":
                 self._require_local_access(path)
                 self._send_json(STATE.wks.snapshot())
+            elif path == "/api/auto-power":
+                self._require_local_access(path)
+                self._send_json(STATE.auto_power_snapshot())
             elif path == "/api/state":
                 self._require_local_access(path)
                 STATE.ensure_logged_in_from_config()
@@ -163,6 +296,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                 quiet = bool(payload.get("quiet"))
                 devices = STATE.run(STATE.client.refresh_devices(log_refresh=not quiet))
                 self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot(include_logs=not quiet)})
+            elif path == "/api/auto-power":
+                self._require_local_access(path)
+                STATE.save_auto_power_config(payload)
+                self._send_json({"ok": True, "automation": STATE.auto_power_snapshot()})
             elif path == "/api/control":
                 self._require_local_access(path)
                 device_id = payload.get("device_id")
@@ -396,6 +533,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             device["wks_online_count"] = sum(1 for host in device["wks_hosts"] if host.get("online"))
             device["wks_host_count"] = len(device["wks_hosts"])
         data["wks"] = wks_snapshot
+        data["automation"] = STATE.auto_power_snapshot()
         if include_logs:
             data["logs"] = STATE.logs[-5:]
         return data

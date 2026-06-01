@@ -43,6 +43,24 @@
     </section>
 
     <main class="dashboard">
+      <section class="automation-panel glass">
+        <div>
+          <h2>自动开关空调</h2>
+          <p id="autoPowerSummary">手动模式，自动开关不会下发指令</p>
+        </div>
+        <div class="automation-controls">
+          <div class="mode-toggle" role="group" aria-label="自动开关模式">
+            <button id="autoPowerManual" type="button" class="is-active" data-mode="manual">手动</button>
+            <button id="autoPowerAuto" type="button" data-mode="auto">自动</button>
+          </div>
+          <label class="delay-field">
+            <span>离线关机缓冲</span>
+            <input id="autoPowerDelay" type="number" min="1" max="180" step="1" value="10" />
+            <span>分钟</span>
+          </label>
+          <button id="btnSaveAutoPower" type="button">保存设置</button>
+        </div>
+      </section>
       <div class="status-row">
         <div id="statusBar" class="status-bar">未登录</div>
         <div id="syncBar" class="sync-bar">等待同步</div>
