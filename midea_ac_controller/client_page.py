@@ -284,6 +284,15 @@ def build_client_page() -> str:
       background: #eaf3ff;
       color: #1d64c8;
     }
+    .card.busy {
+      border-color: rgba(34, 119, 242, 0.30);
+      box-shadow: 0 18px 44px rgba(34, 119, 242, 0.14);
+    }
+    .card.busy .power,
+    .card.busy .temp-btn,
+    .card.busy .action {
+      transform: translateY(0);
+    }
     .card.disabled {
       opacity: 0.72;
     }
@@ -416,6 +425,9 @@ def build_client_page() -> str:
       client_ip: "",
       message: "",
       loading: false,
+      activeCommand: null,
+      commandQueue: [],
+      pollBusy: false,
     };
 
     function el(id) {
@@ -444,22 +456,73 @@ def build_client_page() -> str:
       return { auto: "自动风", low: "低风", medium: "中风", high: "高风", silent: "静音", full: "强风" }[fan] || fan || "--";
     }
 
+    function describeCommand(command) {
+      if (!command) return "";
+      if (command.action === "power") return command.value ? "开机" : "关机";
+      if (command.action === "temperature") return `温度 ${clampTemp(command.value)}°`;
+      if (command.action === "mode") return `模式 ${modeLabel(command.value)}`;
+      if (command.action === "fan") return `风速 ${fanLabel(command.value)}`;
+      return command.action;
+    }
+
+    function pendingCommands() {
+      return [state.activeCommand, ...state.commandQueue].filter(Boolean);
+    }
+
+    function applyCommand(room, command) {
+      if (!room || !command) return;
+      if (command.action === "power") {
+        room.power_on = Boolean(command.value);
+        if (!room.power_on) return;
+        if (!room.current_mode || room.current_mode === "off") {
+          room.current_mode = "cool";
+        }
+      } else if (command.action === "temperature") {
+        room.target_temperature = clampTemp(command.value);
+      } else if (command.action === "mode") {
+        room.current_mode = String(command.value);
+        if (room.current_mode !== "off") room.power_on = true;
+      } else if (command.action === "fan") {
+        room.fan_speed = String(command.value);
+      }
+    }
+
+    function visibleRoom() {
+      if (!state.room) return null;
+      const room = { ...state.room };
+      pendingCommands().forEach((command) => applyCommand(room, command));
+      return room;
+    }
+
     function render(data) {
-      state.room = data.room || null;
-      state.policy = data.policy || state.policy;
-      state.logged_in = Boolean(data.logged_in);
-      state.authorized = Boolean(data.authorized);
-      state.client_ip = data.client_ip || "";
-      state.message = data.message || data.error || "";
+      if (data) {
+        state.room = data.room || null;
+        state.policy = data.policy || state.policy;
+        state.logged_in = Boolean(data.logged_in);
+        state.authorized = Boolean(data.authorized);
+        state.client_ip = data.client_ip || "";
+        state.message = data.message || data.error || "";
+      }
+      renderState();
+    }
+
+    function renderState() {
+      const room = visibleRoom();
+      const queueCount = pendingCommands().length;
+      const busyText = state.activeCommand
+        ? `执行中：${describeCommand(state.activeCommand)}`
+        : state.commandQueue.length
+          ? `排队中：${state.commandQueue.length} 条`
+          : "";
 
       el("policy").textContent = `${state.policy.min_temperature}-${state.policy.max_temperature}°C`;
       el("policyFoot").textContent = `${state.policy.min_temperature}-${state.policy.max_temperature}°C`;
-      el("syncState").textContent = state.message || (state.authorized ? "刚刚更新" : "等待授权");
+      el("syncState").textContent = busyText || state.message || (state.authorized ? "刚刚更新" : "等待授权");
       el("statusPill").innerHTML = state.authorized
-        ? '<span class="status-dot"></span> 网关在线 · 已授权'
+        ? `<span class="status-dot"></span> 网关在线 · ${queueCount ? "指令同步中" : "已授权"}`
         : '<span class="status-dot" style="background:#f59e0b; box-shadow:0 0 0 5px rgba(245,158,11,.12)"></span> 网关在线 · 未授权';
 
-      if (!state.authorized || !state.room) {
+      if (!state.authorized || !room) {
         el("roomName").textContent = "--";
         el("cardTitle").textContent = state.authorized ? "未绑定包厢" : "未授权";
         el("cardSubtitle").textContent = state.authorized ? "当前电脑未绑定包厢" : "当前电脑无权访问";
@@ -468,10 +531,10 @@ def build_client_page() -> str:
         el("targetTemp").textContent = "--";
         el("gateway").textContent = "网关：--";
         el("roomCard").classList.add("disabled");
+        el("roomCard").classList.remove("busy");
         return;
       }
 
-      const room = state.room;
       el("roomName").textContent = room.name || "--";
       el("cardTitle").textContent = room.name || "--";
       el("cardSubtitle").textContent = room.device_id ? `设备号 ${room.device_id}` : "当前包厢空调";
@@ -482,9 +545,16 @@ def build_client_page() -> str:
       el("gateway").textContent = `客户机：${state.client_ip || "--"}`;
       el("powerBtn").classList.toggle("off", !room.power_on);
       el("roomCard").classList.remove("disabled");
+      el("roomCard").classList.toggle("busy", queueCount > 0);
       el("powerBtn").setAttribute("aria-label", room.power_on ? "关机" : "开机");
       el("minTemp").textContent = `${state.policy.min_temperature}°`;
       el("maxTemp").textContent = `${state.policy.max_temperature}°`;
+      document.querySelectorAll(".action[data-mode]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.mode === room.current_mode);
+      });
+      document.querySelectorAll(".action[data-fan]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.fan === room.fan_speed);
+      });
     }
 
     async function api(path, method = "GET", body) {
@@ -497,51 +567,91 @@ def build_client_page() -> str:
     }
 
     async function refresh() {
+      if (state.activeCommand || state.commandQueue.length || state.pollBusy) return;
+      state.pollBusy = true;
       try {
         const suffix = window.location.search || "";
         const data = await api(`/api/client/state${suffix}`);
         render(data);
       } catch (error) {
         render({ authorized: false, error: error.message || String(error) });
+      } finally {
+        state.pollBusy = false;
       }
     }
 
-    async function sendControl(action, value) {
+    function queueControl(action, value) {
       if (!state.authorized || !state.room) return;
-      const payload = {
-        device_id: state.room.device_id,
+      state.commandQueue.push({
         action,
         value,
-      };
+      });
+      state.message = `已加入队列：${describeCommand({ action, value })}`;
+      renderState();
+      processQueue();
+    }
+
+    async function processQueue() {
+      if (state.activeCommand) return;
+      while (state.commandQueue.length) {
+        state.activeCommand = state.commandQueue.shift();
+        renderState();
+        const payload = {
+          device_id: state.room.device_id,
+          action: state.activeCommand.action,
+          value: state.activeCommand.value,
+        };
+        try {
+          const suffix = window.location.search || "";
+          const data = await api(`/api/client/control${suffix}`, "POST", payload);
+          if (!data.ok) throw new Error(data.error || "控制失败");
+          state.room = data.room || state.room;
+          state.policy = data.policy || state.policy;
+          state.message = `已执行：${describeCommand(state.activeCommand)}`;
+        } catch (error) {
+          el("overlay").textContent = error.message || String(error);
+          el("overlay").classList.add("show");
+          setTimeout(() => el("overlay").classList.remove("show"), 2400);
+          state.commandQueue = [];
+          await refreshAfterFailure();
+          break;
+        } finally {
+          state.activeCommand = null;
+          renderState();
+        }
+      }
+    }
+
+    async function refreshAfterFailure() {
       try {
         const suffix = window.location.search || "";
-        const data = await api(`/api/client/control${suffix}`, "POST", payload);
-        if (!data.ok) throw new Error(data.error || "控制失败");
+        const data = await api(`/api/client/state${suffix}`);
         render(data);
-      } catch (error) {
-        el("overlay").textContent = error.message || String(error);
-        el("overlay").classList.add("show");
-        setTimeout(() => el("overlay").classList.remove("show"), 2400);
+      } catch {
+        // Keep the optimistic state visible; the next poll will recover.
       }
     }
 
     el("powerBtn").addEventListener("click", () => {
-      if (!state.room) return;
-      sendControl("power", !state.room.power_on);
+      const room = visibleRoom();
+      if (!room) return;
+      queueControl("power", !room.power_on);
     });
     el("tempDown").addEventListener("click", () => {
-      if (!state.room) return;
-      sendControl("temperature", clampTemp(state.room.target_temperature) - 1);
+      const room = visibleRoom();
+      if (!room) return;
+      queueControl("temperature", clampTemp(room.target_temperature) - 1);
     });
     el("tempUp").addEventListener("click", () => {
-      if (!state.room) return;
-      sendControl("temperature", clampTemp(state.room.target_temperature) + 1);
+      const room = visibleRoom();
+      if (!room) return;
+      queueControl("temperature", clampTemp(room.target_temperature) + 1);
     });
     document.querySelectorAll(".action[data-mode]").forEach((btn) => {
-      btn.addEventListener("click", () => sendControl("mode", btn.dataset.mode));
+      btn.addEventListener("click", () => queueControl("mode", btn.dataset.mode));
     });
     document.querySelectorAll(".action[data-fan]").forEach((btn) => {
-      btn.addEventListener("click", () => sendControl("fan", btn.dataset.fan));
+      btn.addEventListener("click", () => queueControl("fan", btn.dataset.fan));
     });
 
     refresh();
