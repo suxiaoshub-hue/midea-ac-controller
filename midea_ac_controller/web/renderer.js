@@ -19,8 +19,7 @@ const state = {
   statePollBusy: false,
   refreshPollBusy: false,
   interactingUntil: 0,
-  autoPowerMode: "manual",
-  autoPowerDelay: 10,
+  autoPowerDefault: { mode: "manual", offline_delay_minutes: 10 },
   autoPowerRooms: {},
 };
 
@@ -131,25 +130,39 @@ function renderStatus(data) {
 }
 
 function renderAutoPower(automation = {}) {
-  const config = automation.config || {};
-  state.autoPowerMode = config.mode === "auto" ? "auto" : "manual";
-  state.autoPowerDelay = Number(config.offline_delay_minutes || 10);
+  const config = automation.default || automation.config || {};
+  state.autoPowerDefault = {
+    mode: config.mode === "auto" ? "auto" : "manual",
+    offline_delay_minutes: Number(config.offline_delay_minutes || 10),
+  };
   state.autoPowerRooms = automation.rooms || {};
-  el("autoPowerManual").classList.toggle("is-active", state.autoPowerMode === "manual");
-  el("autoPowerAuto").classList.toggle("is-active", state.autoPowerMode === "auto");
-  el("autoPowerDelay").value = String(state.autoPowerDelay);
+  el("autoPowerManual").classList.toggle("is-active", state.autoPowerDefault.mode === "manual");
+  el("autoPowerAuto").classList.toggle("is-active", state.autoPowerDefault.mode === "auto");
+  el("autoPowerDelay").value = String(state.autoPowerDefault.offline_delay_minutes);
   el("autoPowerSummary").textContent =
-    state.autoPowerMode === "auto"
-      ? `自动模式：客户机在线自动开机，全部离线超过 ${state.autoPowerDelay} 分钟自动关机`
-      : "手动模式，自动开关不会下发指令";
+    state.autoPowerDefault.mode === "auto"
+      ? `默认自动：未单独设置的包厢会自动开关，离线缓冲 ${state.autoPowerDefault.offline_delay_minutes} 分钟`
+      : `默认手动：每个包厢可单独切换，默认离线缓冲 ${state.autoPowerDefault.offline_delay_minutes} 分钟`;
+}
+
+function autoPowerConfigFor(deviceId) {
+  const room = state.autoPowerRooms[deviceId] || {};
+  return {
+    mode: room.mode || state.autoPowerDefault.mode || "manual",
+    offline_delay_minutes: Number(room.offline_delay_minutes || state.autoPowerDefault.offline_delay_minutes || 10),
+    host_count: Number(room.host_count || 0),
+    online_count: Number(room.online_count || 0),
+    offline_seconds: Number(room.offline_seconds || 0),
+    offline_delay_seconds: Number(room.offline_delay_seconds || (room.offline_delay_minutes || state.autoPowerDefault.offline_delay_minutes || 10) * 60),
+  };
 }
 
 function autoPowerLabel(device) {
-  const room = state.autoPowerRooms[device.id];
-  if (state.autoPowerMode !== "auto") return "自动开关：手动";
+  const room = autoPowerConfigFor(device.id);
+  if (room.mode !== "auto") return "自动开关：手动";
   if (!room || !room.host_count) return "自动开关：未配置客户机";
   if (room.online_count > 0) return `自动开关：${room.online_count}/${room.host_count} 在线`;
-  const delay = Math.max(1, Math.round((room.offline_delay_seconds || state.autoPowerDelay * 60) / 60));
+  const delay = Math.max(1, Math.round(room.offline_delay_seconds / 60));
   const elapsed = Math.floor((room.offline_seconds || 0) / 60);
   return `自动开关：离线 ${elapsed}/${delay} 分钟`;
 }
@@ -232,6 +245,7 @@ function deviceStateSignature(devices) {
       d.fan_speed,
       d.current_temperature,
       d.target_temperature,
+      JSON.stringify(autoPowerConfigFor(d.id)),
       autoPowerLabel(d),
       wksHostsFor(d).map((item) => `${item.ip}:${item.online ? 1 : 0}`).join(","),
       commandQueueSignature(),
@@ -356,7 +370,7 @@ function renderWksIcons(hosts = []) {
 }
 
 function renderDevices(devices = []) {
-  if (document.activeElement && document.activeElement.matches("select[data-action]")) return;
+  if (document.activeElement && document.activeElement.matches("select[data-action], input[data-auto-delay]")) return;
   if (Date.now() < state.interactingUntil) return;
   const root = el("devices");
   const sortedDevices = sortDevices(devices);
@@ -376,6 +390,7 @@ function renderDevices(devices = []) {
     const wksOnlineCount = wksHosts.filter((host) => host.online).length;
     const wksHostCount = wksHosts.length;
     const wksSummary = wksHostCount ? `${wksOnlineCount}/${wksHostCount} 在线` : "未配置 WKS";
+    const autoCfg = autoPowerConfigFor(d.id);
     const card = document.createElement("article");
     card.className = "card";
     card.innerHTML = `
@@ -392,6 +407,17 @@ function renderDevices(devices = []) {
       <div class="device-meta">设备号：${d.id}</div>
       <div class="device-meta wks-meta">WKS电脑：${wksSummary}${wksHosts.length ? ` · ${escapeHtml(wksHosts.map((item) => item.label || item.ip.split(".").pop()).join(" / "))}` : ""}</div>
       <div class="device-meta">当前温度：${formatTemp(d.current_temperature)}° 目标温度：${formatTemp(d.target_temperature)}°</div>
+      <div class="auto-power-card">
+        <div class="mode-toggle auto-room-toggle" role="group" aria-label="当前包厢自动开关模式">
+          <button type="button" class="${autoCfg.mode === "manual" ? "is-active" : ""}" data-auto-mode="manual" data-id="${escapeHtml(d.id)}">手动</button>
+          <button type="button" class="${autoCfg.mode === "auto" ? "is-active" : ""}" data-auto-mode="auto" data-id="${escapeHtml(d.id)}">自动</button>
+        </div>
+        <label class="auto-delay-field">
+          <span>离线</span>
+          <input data-auto-delay data-id="${escapeHtml(d.id)}" type="number" min="1" max="180" step="1" value="${autoCfg.offline_delay_minutes}" />
+          <span>分钟关</span>
+        </label>
+      </div>
       <div class="control-item">
         <span class="control-label">开机 / 关机</span>
         <button class="power-switch ${d.power_on ? "is-on" : ""}" data-action="power" data-id="${d.id}" aria-label="开关机">
@@ -453,11 +479,12 @@ async function refreshWks() {
   }
 }
 
-async function saveAutoPower() {
+async function saveAutoPower(deviceId = "", mode = state.autoPowerDefault.mode, delay = state.autoPowerDefault.offline_delay_minutes) {
   const payload = {
-    mode: state.autoPowerMode,
-    offline_delay_minutes: Number(el("autoPowerDelay").value || state.autoPowerDelay || 10),
+    mode,
+    offline_delay_minutes: Number(delay || 10),
   };
+  if (deviceId) payload.device_id = deviceId;
   const data = await api("/api/auto-power", "POST", payload);
   if (data.ok === false) {
     throw new Error(data.error || "保存失败");
@@ -465,7 +492,9 @@ async function saveAutoPower() {
   renderAutoPower(data.automation);
   state.deviceSignature = "";
   renderDevices(state.devices);
-  appendLocalLog(`自动开关设置：${state.autoPowerMode === "auto" ? "自动" : "手动"}，离线缓冲 ${state.autoPowerDelay} 分钟`);
+  const device = deviceId ? getDeviceById(deviceId) : null;
+  const target = device ? device.name : "默认策略";
+  appendLocalLog(`自动开关设置：${target} · ${mode === "auto" ? "自动" : "手动"}，离线缓冲 ${Number(delay || 10)} 分钟`);
 }
 
 async function login() {
@@ -580,6 +609,16 @@ async function pollDevices() {
 }
 
 document.addEventListener("click", async (event) => {
+  const autoModeBtn = event.target.closest("button[data-auto-mode]");
+  if (autoModeBtn) {
+    const card = autoModeBtn.closest(".auto-power-card");
+    const delayInput = card ? card.querySelector("input[data-auto-delay]") : null;
+    const delay = Number(delayInput?.value || autoPowerConfigFor(autoModeBtn.dataset.id).offline_delay_minutes || 10);
+    await saveAutoPower(autoModeBtn.dataset.id, autoModeBtn.dataset.autoMode, delay).catch((error) => {
+      appendLocalLog(`自动开关保存失败：${error.message || error}`);
+    });
+    return;
+  }
   const btn = event.target.closest("button[data-action]");
   if (!btn) return;
   const deviceId = btn.dataset.id;
@@ -600,6 +639,14 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("change", async (event) => {
   const target = event.target;
+  if (target.matches("input[data-auto-delay]")) {
+    const deviceId = target.dataset.id;
+    const config = autoPowerConfigFor(deviceId);
+    await saveAutoPower(deviceId, config.mode, Number(target.value || config.offline_delay_minutes || 10)).catch((error) => {
+      appendLocalLog(`自动开关保存失败：${error.message || error}`);
+    });
+    return;
+  }
   if (!target.matches("select[data-action]")) return;
   holdDeviceRender(200);
   queueControl(target.dataset.id, target.dataset.action, target.value);
@@ -622,15 +669,17 @@ el("btnLogin").addEventListener("click", () => {
 });
 el("btnRefresh").addEventListener("click", () => (state.loggedIn ? refreshDevices(false) : refreshAll()));
 el("autoPowerManual").addEventListener("click", () => {
-  state.autoPowerMode = "manual";
-  renderAutoPower({ config: { mode: state.autoPowerMode, offline_delay_minutes: state.autoPowerDelay }, rooms: state.autoPowerRooms });
+  state.autoPowerDefault.mode = "manual";
+  renderAutoPower({ default: state.autoPowerDefault, rooms: state.autoPowerRooms });
 });
 el("autoPowerAuto").addEventListener("click", () => {
-  state.autoPowerMode = "auto";
-  renderAutoPower({ config: { mode: state.autoPowerMode, offline_delay_minutes: state.autoPowerDelay }, rooms: state.autoPowerRooms });
+  state.autoPowerDefault.mode = "auto";
+  renderAutoPower({ default: state.autoPowerDefault, rooms: state.autoPowerRooms });
 });
 el("btnSaveAutoPower").addEventListener("click", () => {
-  saveAutoPower().catch((error) => appendLocalLog(`自动开关保存失败：${error.message || error}`));
+  saveAutoPower("", state.autoPowerDefault.mode, Number(el("autoPowerDelay").value || state.autoPowerDefault.offline_delay_minutes || 10)).catch((error) =>
+    appendLocalLog(`自动开关保存失败：${error.message || error}`),
+  );
 });
 
 loadVersion();

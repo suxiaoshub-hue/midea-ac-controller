@@ -92,27 +92,78 @@ class ApiState:
         return self._normalize_auto_power_config(raw if isinstance(raw, dict) else {})
 
     def save_auto_power_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        config = self._normalize_auto_power_config(payload)
-        AUTO_POWER_FILE.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-        self.log(f"自动开关空调：已切换为{'自动' if config['mode'] == 'auto' else '手动'}模式，离线关机缓冲 {config['offline_delay_minutes']} 分钟")
-        if config["mode"] == "manual":
-            with self.auto_power_lock:
-                self.auto_power_offline_since.clear()
-        return config
+        current = self.load_auto_power_config()
+        device_id = str(payload.get("device_id") or "").strip()
+        if device_id:
+            room_config = self._normalize_auto_power_room_config(payload, current.get("default") or self._default_auto_power_room_config())
+            current.setdefault("rooms", {})[device_id] = room_config
+            device = self.client.devices.get(device_id)
+            room_label = device.name if device else device_id
+            self.log(
+                f"自动开关空调：{room_label} 已切换为{'自动' if room_config['mode'] == 'auto' else '手动'}模式，"
+                f"离线关机缓冲 {room_config['offline_delay_minutes']} 分钟"
+            )
+            if room_config["mode"] == "manual":
+                with self.auto_power_lock:
+                    self.auto_power_offline_since.pop(device_id, None)
+        else:
+            default_config = self._normalize_auto_power_room_config(payload, current.get("default") or self._default_auto_power_room_config())
+            current["default"] = default_config
+            self.log(
+                f"自动开关空调：默认策略已切换为{'自动' if default_config['mode'] == 'auto' else '手动'}模式，"
+                f"离线关机缓冲 {default_config['offline_delay_minutes']} 分钟"
+            )
+            if default_config["mode"] == "manual":
+                with self.auto_power_lock:
+                    self.auto_power_offline_since.clear()
+        normalized = self._normalize_auto_power_config(current)
+        AUTO_POWER_FILE.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+        return normalized
+
+    def _default_auto_power_room_config(self) -> dict[str, Any]:
+        return {
+            "mode": "manual",
+            "offline_delay_minutes": AUTO_POWER_DEFAULT_DELAY_MINUTES,
+        }
 
     def _normalize_auto_power_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        mode = str(payload.get("mode") or "manual").strip().lower()
+        default_config = self._default_auto_power_room_config()
+        rooms: dict[str, dict[str, Any]] = {}
+        raw_default = payload.get("default") if isinstance(payload.get("default"), dict) else None
+        if raw_default:
+            default_config = self._normalize_auto_power_room_config(raw_default, default_config)
+        elif "mode" in payload or "offline_delay_minutes" in payload:
+            default_config = self._normalize_auto_power_room_config(payload, default_config)
+        raw_rooms = payload.get("rooms") if isinstance(payload.get("rooms"), dict) else {}
+        for device_id, room_payload in raw_rooms.items():
+            if not isinstance(room_payload, dict):
+                continue
+            rooms[str(device_id)] = self._normalize_auto_power_room_config(room_payload, default_config)
+        return {
+            "default": default_config,
+            "rooms": rooms,
+            "check_interval_seconds": AUTO_POWER_CHECK_INTERVAL_SECONDS,
+        }
+
+    def _normalize_auto_power_room_config(
+        self,
+        payload: dict[str, Any],
+        fallback: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        fallback = fallback or self._default_auto_power_room_config()
+        mode = str(payload.get("mode", fallback.get("mode") or "manual")).strip().lower()
         if mode not in {"manual", "auto"}:
-            mode = "manual"
+            mode = str(fallback.get("mode") or "manual")
         try:
-            offline_delay_minutes = int(round(float(payload.get("offline_delay_minutes", AUTO_POWER_DEFAULT_DELAY_MINUTES))))
+            offline_delay_minutes = int(
+                round(float(payload.get("offline_delay_minutes", fallback.get("offline_delay_minutes", AUTO_POWER_DEFAULT_DELAY_MINUTES))))
+            )
         except (TypeError, ValueError):
-            offline_delay_minutes = AUTO_POWER_DEFAULT_DELAY_MINUTES
+            offline_delay_minutes = int(fallback.get("offline_delay_minutes", AUTO_POWER_DEFAULT_DELAY_MINUTES))
         offline_delay_minutes = max(1, min(180, offline_delay_minutes))
         return {
             "mode": mode,
             "offline_delay_minutes": offline_delay_minutes,
-            "check_interval_seconds": AUTO_POWER_CHECK_INTERVAL_SECONDS,
         }
 
     def ensure_logged_in_from_config(self) -> None:
@@ -145,17 +196,28 @@ class ApiState:
             online_count = sum(1 for host in hosts if host.get("online"))
             since = offline_since.get(device.id)
             offline_seconds = max(0, int(now - since)) if since is not None else 0
+            room_config = self._auto_power_room_config(config, device.id)
             rooms[device.id] = {
+                "mode": room_config["mode"],
+                "offline_delay_minutes": room_config["offline_delay_minutes"],
                 "host_count": len(hosts),
                 "online_count": online_count,
                 "offline_seconds": offline_seconds,
-                "offline_delay_seconds": config["offline_delay_minutes"] * 60,
+                "offline_delay_seconds": room_config["offline_delay_minutes"] * 60,
             }
         return {
-            "config": config,
+            "default": config["default"],
             "rooms": rooms,
             "config_path": str(AUTO_POWER_FILE),
         }
+
+    def _auto_power_room_config(self, config: dict[str, Any], device_id: str) -> dict[str, Any]:
+        default_config = config.get("default") or self._default_auto_power_room_config()
+        rooms = config.get("rooms") if isinstance(config.get("rooms"), dict) else {}
+        room = rooms.get(device_id)
+        if isinstance(room, dict):
+            return self._normalize_auto_power_room_config(room, default_config)
+        return self._normalize_auto_power_room_config(default_config, default_config)
 
     def _run_auto_power_loop(self) -> None:
         while not self.auto_power_stop.is_set():
@@ -168,8 +230,6 @@ class ApiState:
 
     def _auto_power_tick(self) -> None:
         config = self.load_auto_power_config()
-        if config["mode"] != "auto":
-            return
         self.ensure_logged_in_from_config()
         if self.client.cloud is None or not self.client.devices:
             return
@@ -178,9 +238,13 @@ class ApiState:
             with self.control_lock:
                 self.run(self.client.refresh_devices(log_refresh=False))
             self.auto_power_last_refresh = now
-        offline_delay_seconds = config["offline_delay_minutes"] * 60
         wks_groups = self._normalized_wks_groups()
         for device in self.client.device_list():
+            room_config = self._auto_power_room_config(config, device.id)
+            if room_config["mode"] != "auto":
+                with self.auto_power_lock:
+                    self.auto_power_offline_since.pop(device.id, None)
+                continue
             hosts = wks_groups.get(normalize_wks_group_name(device.name), [])
             if not hosts or not device.online:
                 with self.auto_power_lock:
@@ -197,12 +261,13 @@ class ApiState:
                 continue
             with self.auto_power_lock:
                 offline_since = self.auto_power_offline_since.setdefault(device.id, now)
+            offline_delay_seconds = room_config["offline_delay_minutes"] * 60
             if now - offline_since < offline_delay_seconds:
                 continue
             if self.client.devices[device.id].power_on:
                 with self.control_lock:
                     self.run(self.client.set_power(device.id, False))
-                self.log(f"自动开关空调：{device.name} 客户机离线超过 {config['offline_delay_minutes']} 分钟，自动关机")
+                self.log(f"自动开关空调：{device.name} 客户机离线超过 {room_config['offline_delay_minutes']} 分钟，自动关机")
 
     def _normalized_wks_groups(self) -> dict[str, list[dict[str, Any]]]:
         wks_snapshot = self.wks.snapshot()
