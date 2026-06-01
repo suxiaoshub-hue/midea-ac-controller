@@ -267,7 +267,7 @@ def build_client_page() -> str:
     }
     .actions {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 9px;
     }
     .action {
@@ -341,6 +341,9 @@ def build_client_page() -> str:
       .temp-display strong {
         font-size: 58px;
       }
+      .actions {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
     }
   </style>
 </head>
@@ -403,6 +406,7 @@ def build_client_page() -> str:
           <button class="action" data-mode="cool" type="button">制冷</button>
           <button class="action" data-mode="heat" type="button">制热</button>
           <button class="action" data-fan="auto" type="button">自动风</button>
+          <button class="action" data-fan="full" type="button">强风</button>
         </div>
       </article>
     </main>
@@ -530,6 +534,11 @@ def build_client_page() -> str:
         el("modeChip").textContent = state.authorized ? "等待绑定" : "未授权";
         el("targetTemp").textContent = "--";
         el("gateway").textContent = "网关：--";
+        el("powerBtn").classList.add("off");
+        el("powerBtn").setAttribute("aria-label", "开关");
+        document.querySelectorAll(".action[data-mode], .action[data-fan]").forEach((btn) => {
+          btn.classList.remove("active");
+        });
         el("roomCard").classList.add("disabled");
         el("roomCard").classList.remove("busy");
         return;
