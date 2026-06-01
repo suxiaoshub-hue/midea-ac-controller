@@ -596,7 +596,7 @@ async function pollState() {
   if (state.statePollBusy) return;
   state.statePollBusy = true;
   try {
-    const data = await api("/api/state?logs=0");
+    const data = await api("/api/state");
     renderStatus(data);
     state.serverDevices = data.devices || [];
     state.devices = buildVisibleDevices();
