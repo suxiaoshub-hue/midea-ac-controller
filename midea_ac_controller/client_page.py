@@ -432,6 +432,8 @@ def build_client_page() -> str:
       activeCommand: null,
       commandQueue: [],
       pollBusy: false,
+      tempDraft: null,
+      tempTimer: null,
     };
 
     function el(id) {
@@ -495,6 +497,9 @@ def build_client_page() -> str:
       if (!state.room) return null;
       const room = { ...state.room };
       pendingCommands().forEach((command) => applyCommand(room, command));
+      if (state.tempDraft !== null) {
+        room.target_temperature = clampTemp(state.tempDraft);
+      }
       return room;
     }
 
@@ -513,10 +518,13 @@ def build_client_page() -> str:
     function renderState() {
       const room = visibleRoom();
       const queueCount = pendingCommands().length;
+      const hasDraft = state.tempDraft !== null;
       const busyText = state.activeCommand
         ? `执行中：${describeCommand(state.activeCommand)}`
         : state.commandQueue.length
           ? `排队中：${state.commandQueue.length} 条`
+          : hasDraft
+            ? `准备下发：温度 ${clampTemp(state.tempDraft)}°`
           : "";
 
       el("policy").textContent = `${state.policy.min_temperature}-${state.policy.max_temperature}°C`;
@@ -554,7 +562,7 @@ def build_client_page() -> str:
       el("gateway").textContent = `客户机：${state.client_ip || "--"}`;
       el("powerBtn").classList.toggle("off", !room.power_on);
       el("roomCard").classList.remove("disabled");
-      el("roomCard").classList.toggle("busy", queueCount > 0);
+      el("roomCard").classList.toggle("busy", queueCount > 0 || hasDraft);
       el("powerBtn").setAttribute("aria-label", room.power_on ? "关机" : "开机");
       el("minTemp").textContent = `${state.policy.min_temperature}°`;
       el("maxTemp").textContent = `${state.policy.max_temperature}°`;
@@ -569,6 +577,7 @@ def build_client_page() -> str:
     async function api(path, method = "GET", body) {
       const res = await fetch(`${API_BASE}${path}`, {
         method,
+        cache: "no-store",
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -600,6 +609,24 @@ def build_client_page() -> str:
       processQueue();
     }
 
+    function queueTemperature(value) {
+      if (!state.authorized || !state.room) return;
+      state.commandQueue = state.commandQueue.filter((command) => command.action !== "temperature");
+      state.tempDraft = clampTemp(value);
+      state.message = `准备下发：温度 ${state.tempDraft}°`;
+      renderState();
+      if (state.tempTimer) clearTimeout(state.tempTimer);
+      state.tempTimer = setTimeout(() => {
+        const target = state.tempDraft;
+        state.tempDraft = null;
+        if (target !== null) {
+          queueControl("temperature", target);
+        } else {
+          renderState();
+        }
+      }, 450);
+    }
+
     async function processQueue() {
       if (state.activeCommand) return;
       while (state.commandQueue.length) {
@@ -617,6 +644,9 @@ def build_client_page() -> str:
           state.room = data.room || state.room;
           state.policy = data.policy || state.policy;
           state.message = `已执行：${describeCommand(state.activeCommand)}`;
+          if (state.activeCommand.action === "temperature" && state.room) {
+            state.room.target_temperature = clampTemp(state.activeCommand.value);
+          }
         } catch (error) {
           el("overlay").textContent = error.message || String(error);
           el("overlay").classList.add("show");
@@ -649,12 +679,12 @@ def build_client_page() -> str:
     el("tempDown").addEventListener("click", () => {
       const room = visibleRoom();
       if (!room) return;
-      queueControl("temperature", clampTemp(room.target_temperature) - 1);
+      queueTemperature(clampTemp(room.target_temperature) - 1);
     });
     el("tempUp").addEventListener("click", () => {
       const room = visibleRoom();
       if (!room) return;
-      queueControl("temperature", clampTemp(room.target_temperature) + 1);
+      queueTemperature(clampTemp(room.target_temperature) + 1);
     });
     document.querySelectorAll(".action[data-mode]").forEach((btn) => {
       btn.addEventListener("click", () => queueControl("mode", btn.dataset.mode));

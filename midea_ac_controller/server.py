@@ -435,6 +435,9 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": False, "error": str(exc)}, status, cors=not self._is_client_path())
 
     def _send_headers(self, cors: bool = True):
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         if cors:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
