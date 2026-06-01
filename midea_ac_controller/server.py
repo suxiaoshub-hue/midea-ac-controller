@@ -573,7 +573,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if temperature < CLIENT_MIN_TEMPERATURE or temperature > CLIENT_MAX_TEMPERATURE:
                 raise ValueError(f"温度只能设置 {CLIENT_MIN_TEMPERATURE}-{CLIENT_MAX_TEMPERATURE} 度")
             with STATE.control_lock:
-                STATE.run(STATE.client.set_temperature(device.id, temperature))
+                STATE.run(STATE.client.set_temperature(device.id, temperature, persist_preference=False))
         elif action == "power":
             with STATE.control_lock:
                 if isinstance(value, dict):
@@ -585,13 +585,13 @@ class RequestHandler(BaseHTTPRequestHandler):
             if mode not in {"cool", "heat", "auto", "dry", "fan", "off"}:
                 raise ValueError("不支持的模式")
             with STATE.control_lock:
-                STATE.run(STATE.client.set_mode(device.id, mode))
+                STATE.run(STATE.client.set_mode(device.id, mode, persist_preference=False))
         elif action == "fan":
             fan = str(value)
             if fan not in {"auto", "low", "medium", "high", "silent", "full"}:
                 raise ValueError("不支持的风速")
             with STATE.control_lock:
-                STATE.run(STATE.client.set_fan(device.id, fan))
+                STATE.run(STATE.client.set_fan(device.id, fan, persist_preference=False))
         else:
             raise ValueError(f"未知控制动作: {action}")
         STATE.run(STATE.client.refresh_devices(log_refresh=False))

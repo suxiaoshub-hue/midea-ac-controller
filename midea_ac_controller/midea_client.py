@@ -412,10 +412,10 @@ class MideaAcClient:
                 if preferred_mode:
                     self.log(f"{device.name}: 恢复模式 {_mode_label(preferred_mode)}")
                     await asyncio.sleep(0.5)
-                    await self.set_mode(device_id, preferred_mode)
+                    await self.set_mode(device_id, preferred_mode, persist_preference=False)
         self.log(f"{device.name}: {'开机' if on else '关机'}")
 
-    async def set_temperature(self, device_id: str, temperature: float) -> None:
+    async def set_temperature(self, device_id: str, temperature: float, persist_preference: bool = True) -> None:
         device = self.devices[device_id]
         temperature = _normalize_set_temperature(temperature)
         if device.device_type == 0x21 or device.is_central_node:
@@ -428,7 +428,8 @@ class MideaAcClient:
             if not applied:
                 actual = format_temperature(self.devices[device_id].target_temperature)
                 raise RuntimeError(f"{device.name}: 温度未生效，设备目标温度仍为 {actual}°")
-            self._remember_preferred_temperature(self.devices[device_id], temperature)
+            if persist_preference:
+                self._remember_preferred_temperature(self.devices[device_id], temperature)
             self.log(f"{device.name}: 设置温度 {temperature:g}°")
             return
         mode = self._temperature_mode(device)
@@ -438,10 +439,11 @@ class MideaAcClient:
         if not applied:
             actual = format_temperature(self.devices[device_id].target_temperature)
             raise RuntimeError(f"{device.name}: 温度未生效，设备目标温度仍为 {actual}°")
-        self._remember_preferred_temperature(self.devices[device_id], temperature)
+        if persist_preference:
+            self._remember_preferred_temperature(self.devices[device_id], temperature)
         self.log(f"{device.name}: 设置温度 {temperature:g}°")
 
-    async def set_mode(self, device_id: str, mode: str) -> None:
+    async def set_mode(self, device_id: str, mode: str, persist_preference: bool = True) -> None:
         device = self.devices[device_id]
         if device.device_type == 0x21 or device.is_central_node:
             run_modes = {"off": "0", "fan": "1", "cool": "2", "heat": "3", "auto": "4", "dry": "5"}
@@ -459,13 +461,14 @@ class MideaAcClient:
                 actual = self._reported_mode(self.devices[device_id]) or "未知"
                 self.log(f"{device.name}: 模式未生效，设备仍为 {_mode_label(actual)}")
                 raise RuntimeError(f"{device.name}: 模式未生效，设备仍为 {_mode_label(actual)}")
-            self._remember_preferred_mode(device, mode)
+            if persist_preference:
+                self._remember_preferred_mode(device, mode)
         self.log(f"{device.name}: 设置模式 {_mode_label(mode)}")
 
-    async def set_fan(self, device_id: str, fan: str) -> None:
+    async def set_fan(self, device_id: str, fan: str, persist_preference: bool = True) -> None:
         device = self.devices[device_id]
         if device.device_type == 0x21 or device.is_central_node:
-            fan_modes = {"off": "0", "low": "1", "medium": "3", "high": "5", "auto": "8"}
+            fan_modes = {"off": "0", "low": "1", "silent": "1", "medium": "3", "high": "5", "full": "5", "auto": "8"}
             await self._send_central_control(device, {"fan_speed": fan_modes[fan]})
         else:
             await self._send_regular_control(device, self._regular_fan_control(device, fan))
@@ -473,7 +476,8 @@ class MideaAcClient:
         if not applied:
             actual = self.devices[device_id].fan_speed
             raise RuntimeError(f"{device.name}: 风速未生效，设备仍为 {_fan_label(actual)}")
-        self._remember_preferred_fan(self.devices[device_id], fan)
+        if persist_preference:
+            self._remember_preferred_fan(self.devices[device_id], fan)
         self.log(f"{device.name}: 设置风速 {_fan_label(fan)}")
 
     async def _send_regular_control(self, device: AcDevice, control: dict[str, Any]) -> None:
@@ -637,11 +641,11 @@ class MideaAcClient:
         temperature = int(desired["temperature"])
         fan = str(desired["fan"])
         if mode and mode != "off" and self._reported_mode(device) != mode:
-            await self.set_mode(device_id, mode)
+            await self.set_mode(device_id, mode, persist_preference=False)
         if temperature:
-            await self.set_temperature(device_id, temperature)
+            await self.set_temperature(device_id, temperature, persist_preference=False)
         if fan and fan != "off":
-            await self.set_fan(device_id, fan)
+            await self.set_fan(device_id, fan, persist_preference=False)
 
     def _central_run_mode(self, mode: str) -> str:
         return {"cool": "2", "heat": "3", "auto": "4", "dry": "5", "fan": "1"}.get(mode, "2")
