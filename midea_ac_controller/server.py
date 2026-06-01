@@ -29,6 +29,22 @@ AUTO_POWER_DEFAULT_DELAY_MINUTES = 10
 AUTO_POWER_CHECK_INTERVAL_SECONDS = 5
 ROOM_RANGE_RE = re.compile(r"[（(]\s*(\d+)(?:\s*[-~－—–至]\s*(\d+))?\s*[)）]")
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+MODE_LABELS = {
+    "cool": "制冷",
+    "heat": "制热",
+    "auto": "自动",
+    "dry": "除湿",
+    "fan": "送风",
+    "off": "关闭",
+}
+FAN_LABELS = {
+    "auto": "自动",
+    "low": "低风",
+    "medium": "中风",
+    "high": "高风",
+    "silent": "静音",
+    "full": "强风",
+}
 
 
 class ApiState:
@@ -38,6 +54,7 @@ class ApiState:
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
         self.logs: list[str] = []
+        self.logs_lock = threading.Lock()
         self.client = MideaAcClient(APP_DIR, self.log)
         self.auto_login_attempted = False
         self.wks = WksMonitor(APP_DIR, self.log)
@@ -55,9 +72,15 @@ class ApiState:
         self.loop.run_forever()
 
     def log(self, message: str):
-        self.logs.append(message)
-        self.logs[:] = self.logs[-50:]
+        stamped = f"[{time.strftime('%H:%M:%S')}] {message}"
+        with self.logs_lock:
+            self.logs.append(stamped)
+            self.logs[:] = self.logs[-50:]
         logging.info(message)
+
+    def recent_logs(self, limit: int = 5) -> list[str]:
+        with self.logs_lock:
+            return self.logs[-limit:]
 
     def run(self, coro):
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -265,7 +288,8 @@ class ApiState:
                         self.run(self.client.apply_desired_settings(device.id))
                     self.log(
                         f"自动开关空调：{device.name} 检测到客户机在线，自动开机并应用设定 "
-                        f"{desired['temperature']}° / {desired['mode']} / {desired['fan']}"
+                        f"{desired['temperature']}° / {MODE_LABELS.get(desired['mode'], desired['mode'])} / "
+                        f"{FAN_LABELS.get(desired['fan'], desired['fan'])}"
                     )
                 continue
             with self.auto_power_lock:
@@ -395,6 +419,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                         STATE.run(STATE.client.set_fan(device_id, str(value)))
                     else:
                         raise ValueError(f"未知控制动作: {action}")
+                device = STATE.client.devices.get(str(device_id))
+                device_name = device.name if device else str(device_id)
+                STATE.log(f"控制台操作：{device_name} · {self._describe_control(action, value)}")
                 devices = STATE.client.device_list()
                 self._send_json({"ok": True, "devices": [d.to_dict() for d in devices], "state": self._snapshot()})
             elif path == "/api/client/control":
@@ -549,7 +576,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         payload["client_ip"] = ip
         payload["logged_in"] = STATE.client.cloud is not None
         payload["device_count"] = len(STATE.client.devices)
-        payload["logs"] = STATE.logs[-5:]
+        payload["logs"] = STATE.recent_logs()
         if message:
             payload["message"] = message
         return payload
@@ -598,7 +625,23 @@ class RequestHandler(BaseHTTPRequestHandler):
         else:
             raise ValueError(f"未知控制动作: {action}")
         STATE.run(STATE.client.refresh_devices(log_refresh=False))
+        STATE.log(f"客户机 {client_ip} 操作：{device.name} · {self._describe_control(action, value)}")
         return {"ok": True, **self._client_payload(device, client_ip, "控制已下发")}
+
+    def _describe_control(self, action: str, value: Any) -> str:
+        if action == "power":
+            on = bool(value.get("on")) if isinstance(value, dict) else bool(value)
+            return "开机" if on else "关机"
+        if action == "temperature":
+            try:
+                return f"设置温度 {int(round(float(value)))}°"
+            except (TypeError, ValueError):
+                return f"设置温度 {value}"
+        if action == "mode":
+            return f"设置模式 {MODE_LABELS.get(str(value), value)}"
+        if action == "fan":
+            return f"设置风速 {FAN_LABELS.get(str(value), value)}"
+        return str(action)
 
     def _snapshot(self, include_logs: bool = True):
         data = STATE.client.snapshot()
@@ -612,7 +655,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         data["wks"] = wks_snapshot
         data["automation"] = STATE.auto_power_snapshot()
         if include_logs:
-            data["logs"] = STATE.logs[-5:]
+            data["logs"] = STATE.recent_logs()
         return data
 
 

@@ -12,6 +12,8 @@ const state = {
   deviceSignature: "",
   lastUpdatedAt: null,
   logsSignature: "",
+  serverLogs: [],
+  localLogs: [],
   loginPanelOpen: false,
   verifyTimer: null,
   activeCommand: null,
@@ -100,9 +102,41 @@ async function loadConfig() {
   }
 }
 
-function renderLogs(lines = []) {
+function currentTimeLabel() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+function logTimeValue(line) {
+  const match = String(line || "").match(/^\[(\d{1,2}):(\d{2}):(\d{2})]/);
+  if (!match) return null;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+function combinedLogs() {
+  const seen = new Set();
+  const merged = [];
+  [...state.serverLogs, ...state.localLogs].forEach((line, index) => {
+    const value = String(line || "").trim();
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    merged.push({ value, index, time: logTimeValue(value) });
+  });
+  return merged
+    .sort((a, b) => {
+      if (a.time !== null && b.time !== null && a.time !== b.time) return a.time - b.time;
+      return a.index - b.index;
+    })
+    .map((item) => item.value);
+}
+
+function renderLogs(lines = null) {
+  if (Array.isArray(lines)) {
+    state.serverLogs = lines.filter(Boolean).slice(-50);
+  }
   const box = el("logs");
-  const visibleLines = lines.slice(-5);
+  const visibleLines = combinedLogs().slice(-5);
   const signature = visibleLines.join("\n");
   if (signature === state.logsSignature) return;
   state.logsSignature = signature;
@@ -111,8 +145,9 @@ function renderLogs(lines = []) {
 }
 
 function appendLocalLog(line) {
-  const current = el("logs").textContent ? el("logs").textContent.split("\n").filter(Boolean) : [];
-  renderLogs([...current, line]);
+  state.localLogs.push(`[${currentTimeLabel()}] ${line}`);
+  state.localLogs = state.localLogs.slice(-50);
+  renderLogs();
 }
 
 function renderStatus(data) {
@@ -126,7 +161,11 @@ function renderStatus(data) {
     : "未登录";
   el("syncBar").textContent = state.lastUpdatedAt ? `最后更新 ${state.lastUpdatedAt.toLocaleTimeString()}` : "等待同步";
   updateLoginPanel();
-  if (data.logs && data.logs.length) renderLogs(data.logs || []);
+  if (Array.isArray(data.logs)) {
+    renderLogs(data.logs);
+  } else {
+    renderLogs();
+  }
 }
 
 function renderAutoPower(automation = {}) {
